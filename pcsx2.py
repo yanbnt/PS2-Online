@@ -107,6 +107,33 @@ def scan_games(folders):
     return sorted(games, key=lambda x: Path(x).stem.lower())
 
 
+def _get_key(lines, key):
+    for l in lines:
+        if "=" in l and l.split("=", 1)[0].strip() == key:
+            return l.split("=", 1)[1].strip()
+    return None
+
+
+def check_guest_pads(exe_path: str, sdl_base: int, mode: str):
+    """Confere se o PCSX2.ini está como o configure_guest_pads deixaria. Retorna a lista de problemas."""
+    ini = find_ini(exe_path)
+    if not ini.exists():
+        return ["o PCSX2 ainda não foi aberto nenhuma vez (PCSX2.ini não existe)"]
+    secs = {n: l for n, l in _read_sections(ini)}
+    m = MULTITAP_MODES[mode]
+    problems = []
+    pad = secs.get("Pad", [])
+    for key, want in (("MultitapPort1", m["mt1"]), ("MultitapPort2", m["mt2"])):
+        if (_get_key(pad, key) or "false").lower() != ("true" if want else "false"):
+            problems.append(f"multitap da porta {key[-1]} está {'desligado' if want else 'ligado'}")
+    for i, slot in enumerate(m["slots"]):
+        lines = secs.get(slot, [])
+        dev = f"SDL-{sdl_base + i}"
+        if _get_key(lines, "Type") != "DualShock2" or _get_key(lines, "Cross") != f"{dev}/FaceSouth":
+            problems.append(f"Jogador {i + 2} (porta {SLOT_NAMES[slot]}) não está ligado ao controle virtual {dev}")
+    return problems
+
+
 def configure_guest_pads(exe_path: str, sdl_base: int, mode: str, n_guests: int):
     """Liga as portas dos convidados aos controles virtuais SDL-<base+i>. Faz backup do ini."""
     ini = find_ini(exe_path)

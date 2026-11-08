@@ -197,6 +197,11 @@ class HostTab(QWidget):
         f2.addRow(hint("= quantos controles físicos você (host) tem ligados. Com 1 controle seu, use 1. "
                        "Só teclado, use 0."))
         f2.addRow(self.btn_cfg)
+        self.pad_status = QLabel()
+        self.pad_status.setWordWrap(True)
+        f2.addRow(self.pad_status)
+        self.mode.currentIndexChanged.connect(lambda _: self._update_pad_status())
+        self.sdl_base.valueChanged.connect(lambda _: self._update_pad_status())
         left.addWidget(g2)
 
         # --- 3. servidor
@@ -285,6 +290,7 @@ class HostTab(QWidget):
 
         self._refresh_games()
         self._update_ips()
+        self._update_pad_status()
         self._prev_bytes = {}
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -359,6 +365,11 @@ class HostTab(QWidget):
         if not Path(exe).exists():
             QMessageBox.warning(self, APP_NAME, "Não encontrei o pcsx2-qt.exe nesse caminho.")
             return
+        if pcsx2.is_running():
+            QMessageBox.information(self, APP_NAME, "O PCSX2 já está aberto.")
+            return
+        if not self._ensure_pads():
+            return
         game = self.games.currentData() or None
         self.s.setValue("host/game", game or "")
         pcsx2.launch(exe, game, self.fullscreen.isChecked())
@@ -372,23 +383,68 @@ class HostTab(QWidget):
         self.logf(f"{n} controle(s) XInput físico(s) detectado(s). Controles PlayStation ligados direto "
                   f"não aparecem aqui — some 1 para cada um.")
 
-    def _configure_pcsx2(self):
+    def _configure_pcsx2(self, quiet=False) -> bool:
         exe = self.exe.text()
         if pcsx2.is_running():
             QMessageBox.warning(self, APP_NAME, "Feche o PCSX2 antes. Ele regrava a configuração ao sair e "
                                                 "desfaria a alteração.")
-            return
+            return False
         mode = self.mode.currentData()
         n = len(pcsx2.MULTITAP_MODES[mode]["slots"])
         try:
             ini, backup, done = pcsx2.configure_guest_pads(exe, self.sdl_base.value(), mode, n)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, str(e))
-            return
+            return False
+        self.s.setValue("host/sdl_base", self.sdl_base.value())
+        self.s.setValue("host/mode", mode)
         lines = "\n".join(f"Jogador {i + 2} → porta {pcsx2.SLOT_NAMES[s]} → {d}" for i, (s, d) in enumerate(done))
         self.logf(f"PCSX2 configurado ({ini.name}); backup em {backup.name}.")
-        QMessageBox.information(self, APP_NAME, f"Pronto! Portas configuradas:\n\n{lines}\n\n"
-                                                f"Backup salvo em:\n{backup}")
+        self._update_pad_status()
+        if not quiet:
+            QMessageBox.information(self, APP_NAME, f"Pronto! Portas configuradas:\n\n{lines}\n\n"
+                                                    f"Backup salvo em:\n{backup}")
+        return True
+
+    def _pad_problems(self):
+        try:
+            return pcsx2.check_guest_pads(self.exe.text(), self.sdl_base.value(), self.mode.currentData())
+        except Exception as e:
+            return [f"não consegui ler a configuração do PCSX2 ({e})"]
+
+    def _update_pad_status(self):
+        problems = self._pad_problems()
+        if problems:
+            self.pad_status.setText("⚠  Controles dos convidados <b>não configurados</b> no PCSX2 — "
+                                    "o amigo não vai conseguir jogar.")
+            self.pad_status.setStyleSheet("color: #f2a541;")
+            self.pad_status.setToolTip("\n".join(problems))
+        else:
+            self.pad_status.setText("✓  PCSX2 configurado para os convidados.")
+            self.pad_status.setStyleSheet("color: #51cf66;")
+            self.pad_status.setToolTip("")
+
+    def _ensure_pads(self) -> bool:
+        """Antes de abrir o jogo ou a sala: confere os controles e oferece configurar. True = pode seguir."""
+        problems = self._pad_problems()
+        if not problems:
+            return True
+        text = ("Os controles dos convidados ainda não estão configurados no PCSX2:\n\n• "
+                + "\n• ".join(problems) + "\n\nSem isso o PCSX2 abre, mas o seu amigo não controla nada no jogo.")
+        if pcsx2.is_running():
+            ans = QMessageBox.warning(self, APP_NAME, text + "\n\nFeche o PCSX2 e clique em "
+                                      "\"Configurar portas no PCSX2\".\n\nContinuar mesmo assim?",
+                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            return ans == QMessageBox.Yes
+        box = QMessageBox(QMessageBox.Warning, APP_NAME, text, parent=self)
+        b_cfg = box.addButton("Configurar e continuar", QMessageBox.AcceptRole)
+        b_skip = box.addButton("Continuar sem configurar", QMessageBox.DestructiveRole)
+        box.addButton("Cancelar", QMessageBox.RejectRole)
+        box.setDefaultButton(b_cfg)
+        box.exec()
+        if box.clickedButton() is b_cfg:
+            return self._configure_pcsx2(quiet=True)
+        return box.clickedButton() is b_skip
 
     # ------------------------------------------------------------- servidor
     def _toggle_server(self):
@@ -416,6 +472,8 @@ class HostTab(QWidget):
             if ans == QMessageBox.Yes:
                 import subprocess
                 subprocess.Popen(["msiexec", "/i", str(msi)])
+            return
+        if not self._ensure_pads():
             return
 
         from host import HostServer
@@ -471,6 +529,9 @@ class HostTab(QWidget):
         self.server.kick(item.data(Qt.UserRole))
 
     def _tick(self):
+        self._pad_tick = getattr(self, "_pad_tick", 0) + 1
+        if self._pad_tick % 3 == 1:       # relê o PCSX2.ini a cada 3 s
+            self._update_pad_status()
         if not self.server:
             return
         snap = sorted(self.server.snapshot(), key=lambda c: c["slot_idx"])

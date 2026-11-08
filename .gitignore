@@ -7,6 +7,7 @@ dist/
 idist/
 ibuild/
 payload/
+out/
 *.spec
 *.zip
 *.exe
