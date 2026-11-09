@@ -71,3 +71,11 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 > Não use o PyInstaller `--onefile` para o instalador. O Windows Defender marca esse tipo de `.exe` como `Trojan:Win32/Wacatac.B!ml` (falso positivo da detecção por IA). O app em modo pasta e o instalador do Inno Setup passam limpos.
 
 O app tem um autoteste embutido: `"PS2 Online.exe" --selftest resultado.txt`.
+
+## Licença
+
+O código do PS2 Online está sob a licença **[MIT](LICENSE)**: pode usar, modificar e distribuir, desde que mantenha o aviso de copyright.
+
+O instalador inclui componentes de terceiros, cada um com a sua licença: [PySide6/Qt](https://www.qt.io/licensing/) (LGPL), [PyAV](https://github.com/PyAV-Org/PyAV)/FFmpeg (BSD/LGPL/GPL), [ViGEmBus](https://github.com/nefarius/ViGEmBus) e [vgamepad](https://github.com/yannbouteiller/vgamepad) (BSD/MIT), [mss](https://github.com/BoboTiG/python-mss) (MIT), [NumPy](https://numpy.org/) (BSD) e [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) (MIT).
+
+O PS2 Online não inclui jogos, BIOS nem o PCSX2. Use apenas cópias que você tem o direito de usar.
