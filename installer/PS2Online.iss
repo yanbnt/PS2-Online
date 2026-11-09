@@ -3,7 +3,7 @@
 ; (o build.ps1 faz isso automaticamente)
 
 #define AppName "PS2 Online"
-#define AppVersion "1.2.1"
+#define AppVersion "1.3"
 #define AppExe "PS2 Online.exe"
 #ifndef AppDir
   #define AppDir "..\dist\PS2 Online"
@@ -20,7 +20,7 @@ AppVerName={#AppName} {#AppVersion}
 AppPublisher=yanbnt
 AppPublisherURL=https://github.com/yanbnt/PS2-Online
 AppSupportURL=https://github.com/yanbnt/PS2-Online
-VersionInfoVersion={#AppVersion}.0
+VersionInfoVersion={#AppVersion}.0.0
 VersionInfoDescription=Instalador do PS2 Online
 VersionInfoProductName={#AppName}
 ; instala só para o usuário atual: não pede administrador (só o driver pede, se marcado)

@@ -114,8 +114,22 @@ def _get_key(lines, key):
     return None
 
 
-def check_guest_pads(exe_path: str, sdl_base: int, mode: str):
-    """Confere se o PCSX2.ini está como o configure_guest_pads deixaria. Retorna a lista de problemas."""
+def _pad_lines(dev):
+    lines = ["Type = DualShock2", "Deadzone = 0", "AxisScale = 1.33",
+             "LargeMotorScale = 1", "SmallMotorScale = 1", "PressureModifier = 0.5"]
+    lines += [f"{k} = {dev}/{v}" for k, v in DS2_BINDINGS]
+    return lines + ["", ""]
+
+
+def _device_of(lines):
+    """Controle usado numa seção [PadN], pelo botão X (ex.: 'SDL-2'), ou None."""
+    cross = _get_key(lines, "Cross") or ""
+    return cross.split("/", 1)[0] if "/" in cross else None
+
+
+def check_guest_pads(exe_path: str, mode: str, guest_devs, host_dev=None):
+    """Confere o PCSX2.ini: multitap, cada convidado no controle virtual certo e (se informado)
+    o Jogador 1 no controle físico do host. Retorna a lista de problemas (vazia = tudo certo)."""
     ini = find_ini(exe_path)
     if not ini.exists():
         return ["o PCSX2 ainda não foi aberto nenhuma vez (PCSX2.ini não existe)"]
@@ -126,16 +140,23 @@ def check_guest_pads(exe_path: str, sdl_base: int, mode: str):
     for key, want in (("MultitapPort1", m["mt1"]), ("MultitapPort2", m["mt2"])):
         if (_get_key(pad, key) or "false").lower() != ("true" if want else "false"):
             problems.append(f"multitap da porta {key[-1]} está {'desligado' if want else 'ligado'}")
-    for i, slot in enumerate(m["slots"]):
+    for i, (slot, dev) in enumerate(zip(m["slots"], guest_devs)):
         lines = secs.get(slot, [])
-        dev = f"SDL-{sdl_base + i}"
-        if _get_key(lines, "Type") != "DualShock2" or _get_key(lines, "Cross") != f"{dev}/FaceSouth":
-            problems.append(f"Jogador {i + 2} (porta {SLOT_NAMES[slot]}) não está ligado ao controle virtual {dev}")
+        if _get_key(lines, "Type") != "DualShock2" or _device_of(lines) != dev:
+            problems.append(f"Jogador {i + 2} (porta {SLOT_NAMES[slot]}) deveria usar o controle virtual {dev}, "
+                            f"mas está em {_device_of(lines) or 'nenhum'}")
+    if host_dev:
+        cur = _device_of(secs.get("Pad1", []))
+        if cur != host_dev and (cur is None or cur.startswith("SDL-")):
+            problems.append(f"Jogador 1 (você) deveria usar o seu controle {host_dev}, mas está em {cur or 'nenhum'}")
     return problems
 
 
-def configure_guest_pads(exe_path: str, sdl_base: int, mode: str, n_guests: int):
-    """Liga as portas dos convidados aos controles virtuais SDL-<base+i>. Faz backup do ini."""
+def configure_guest_pads(exe_path: str, mode: str, guest_devs, host_dev=None):
+    """Liga os convidados aos controles virtuais e o Jogador 1 ao controle físico do host. Faz backup do ini.
+
+    guest_devs: ex. ["SDL-1"] (um por vaga de convidado). host_dev: ex. "SDL-0" ou None (não mexe no Jogador 1).
+    """
     ini = find_ini(exe_path)
     if not ini.exists():
         raise FileNotFoundError(f"Não achei o PCSX2.ini em {ini}. Abra o PCSX2 uma vez primeiro.")
@@ -153,19 +174,51 @@ def configure_guest_pads(exe_path: str, sdl_base: int, mode: str, n_guests: int)
     _set_key(pad, "MultitapPort2", "true" if m["mt2"] else "false")
 
     done = []
-    for i, slot in enumerate(m["slots"][:n_guests]):
-        dev = f"SDL-{sdl_base + i}"
-        lines = ["Type = DualShock2", "Deadzone = 0", "AxisScale = 1.33",
-                 "LargeMotorScale = 1", "SmallMotorScale = 1", "PressureModifier = 0.5"]
-        lines += [f"{k} = {dev}/{v}" for k, v in DS2_BINDINGS]
-        lines += ["", ""]
+    for slot, dev in zip(m["slots"], guest_devs):
         if slot in by_name:
-            by_name[slot][:] = lines
+            by_name[slot][:] = _pad_lines(dev)
         else:
-            sections.append((slot, lines))
+            sections.append((slot, _pad_lines(dev)))
         done.append((slot, dev))
+
+    if host_dev:
+        p1 = by_name.get("Pad1")
+        cur = _device_of(p1 or [])
+        if p1 is None or _get_key(p1, "Type") in (None, "None") or cur is None:
+            lines = _pad_lines(host_dev)            # Jogador 1 sem controle: liga ao do host
+            if p1 is None:
+                sections.append(("Pad1", lines))
+            else:
+                p1[:] = lines
+        elif cur.startswith("SDL-") and cur != host_dev:
+            # mantém os botões que você configurou, só troca qual controle é usado
+            p1[:] = [l.replace(f"{cur}/", f"{host_dev}/") for l in p1]
+        done.insert(0, ("Pad1", host_dev))
     _write_sections(ini, sections)
     return ini, backup, done
+
+
+def close_gracefully(timeout=90) -> bool:
+    """Pede para o PCSX2 fechar (como clicar no X; ele pode perguntar se quer mesmo sair) e espera."""
+    WM_CLOSE = 0x0010
+    pids = find_pids()
+    if not pids:
+        return True
+
+    def cb(hwnd, _):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and user32.IsWindowVisible(hwnd) and window_title(hwnd):
+            user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
+    t = time.time()
+    while time.time() - t < timeout:
+        if not find_pids():
+            return True
+        time.sleep(0.3)
+    return False
 
 
 # ---------------------------------------------------------------- processo

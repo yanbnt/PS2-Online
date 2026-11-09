@@ -30,6 +30,16 @@ Para rodar a partir do código-fonte: instale o Python 3.11 ou mais novo e dê d
 
 A tela **Controles** mostra ao vivo o seu controle e o de cada amigo, para conferir se os comandos estão chegando.
 
+Ao abrir a sala, o app liga você ao seu controle (Jogador 1) e cada amigo ao controle virtual dele, ajustando o PCSX2 sozinho. Se o PCSX2 já estiver aberto com os controles trocados, aparece um aviso com o botão **Corrigir agora**, que reabre o PCSX2 no mesmo jogo. Salve antes de clicar.
+
+## Chamada de voz
+
+- Liga sozinha na sala: todos falam com todos, junto com o som do jogo.
+- **F9** muta/desmuta (funciona com o jogo em foco). Também há o botão 🎤 na barra lateral.
+- Em **Avançado → Chamada de voz**: microfone, sensibilidade, volume das vozes e **apertar para falar**.
+- O som do jogo que vai para os amigos não inclui o som do PS2 Online, então a voz não volta como eco.
+- Use **fone de ouvido**: sem fone, o microfone capta a caixa de som.
+
 Fechar o PS2 Online encerra tudo: a sala, a porta no roteador e a conexão dos amigos, que recebem o aviso "O host fechou a sala".
 
 ## Convidado
@@ -69,7 +79,7 @@ Para jogar pelo teclado, veja o mapa de teclas na própria aba.
 
 ## Limitações
 
-- O áudio transmitido é o som do PC inteiro do host. Se o host usa Discord nas caixas de som, o convidado ouve eco.
+- O som transmitido é o do PC do host, menos o próprio PS2 Online. Outros programas tocando (Spotify, Discord) vão junto.
 - A janela do PCSX2 precisa ficar visível no host, porque a captura é da tela.
 - O convidado lê controles **XInput**. Controles de PlayStation precisam do DS4Windows ou do Steam Input.
 - A senha é enviada sem criptografia. Use uma senha que você não usa em outro lugar.

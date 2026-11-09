@@ -25,13 +25,14 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
 import invite
 import pcsx2
 import upnp
+import voice
 import xinput
 from protocol import DEFAULT_PORT
 from widgets import (ACCENT, BAD, MUTED, OK, WARN, AnimButton, Card, FadeStack, GamepadView, PasswordEdit,
                      PulseDot, Sidebar, Spinner, StatusIcon, Toast, field)
 
 APP_NAME = "PS2 Online"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3"
 APPROVAL_TIMEOUT = 90
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
@@ -215,6 +216,7 @@ class Bridge(QObject):
     log = Signal(str)
     wan = Signal(str)
     approve = Signal(object)
+    pcsx2_closed = Signal(bool)
 
 
 # ============================================================================== AVANÇADO
@@ -247,21 +249,14 @@ class AdvancedPage(QWidget):
         for key, m in pcsx2.MULTITAP_MODES.items():
             self.mode.addItem(m["label"], key)
         self.mode.setCurrentIndex(max(0, self.mode.findData(self.s.value("host/mode", "off"))))
-        self.sdl_base = spin(0, 7, int(self.s.value("host/sdl_base", 1)))
-        b_det = QPushButton("Detectar")
-        b_det.setObjectName("mini")
-        b_det.clicked.connect(self.detect_pads)
         g = QGridLayout()
         g.setHorizontalSpacing(14)
         g.setAlignment(Qt.AlignTop)
         g.addWidget(field("Jogadores", self.mode), 0, 0, Qt.AlignTop)
-        sdl_row = QHBoxLayout()
-        sdl_row.setContentsMargins(0, 0, 0, 0)
-        sdl_row.addWidget(self.sdl_base, 1)
-        sdl_row.addWidget(b_det)
-        sw = QWidget()
-        sw.setLayout(sdl_row)
-        g.addWidget(field("Nº SDL do 1º convidado", sw, "= quantos controles físicos você (host) tem ligados."),
+        self.map_lbl = QLabel()
+        self.map_lbl.setWordWrap(True)
+        g.addWidget(field("Ligação dos controles (automática)", self.map_lbl,
+                          "O app descobre qual controle é o seu e qual é o de cada amigo, e ajusta o PCSX2."),
                     0, 1, Qt.AlignTop)
         c1.body.addLayout(g)
         st_row = QHBoxLayout()
@@ -313,13 +308,59 @@ class AdvancedPage(QWidget):
         c3.body.addWidget(field("Porta TCP", self.port))
         c3.body.addWidget(self.upnp_cb)
         root.addWidget(c3)
+
+        # Voz
+        c4 = Card("Chamada de voz")
+        self.voice_cb = QCheckBox("Ativar chamada de voz (falar com os amigos e ouvir eles junto com o jogo)")
+        self.voice_cb.setChecked(self.s.value("voice/on", "true") == "true")
+        c4.body.addWidget(self.voice_cb)
+        self.mic_combo = QComboBox()
+        self.mic_combo.addItem("Microfone padrão do Windows", None)
+        try:
+            for idx, name in voice.input_devices():
+                self.mic_combo.addItem(name, idx)
+        except Exception:
+            pass
+        saved_mic = self.s.value("voice/mic_name", "")
+        i = self.mic_combo.findText(saved_mic) if saved_mic else -1
+        self.mic_combo.setCurrentIndex(max(0, i))
+        self.voice_mode = QComboBox()
+        self.voice_mode.addItem("Falar automaticamente (detecta a sua voz)", False)
+        self.voice_mode.addItem("Apertar uma tecla para falar", True)
+        self.voice_mode.setCurrentIndex(1 if self.s.value("voice/ptt", "false") == "true" else 0)
+        self.ptt_key = QComboBox()
+        for name in voice.PTT_KEYS:
+            self.ptt_key.addItem(name)
+        self.ptt_key.setCurrentIndex(max(0, self.ptt_key.findText(self.s.value("voice/ptt_key", "CapsLock"))))
+        self.sens = QSlider(Qt.Horizontal)
+        self.sens.setRange(0, 100)
+        self.sens.setValue(int(self.s.value("voice/sens", 50)))
+        self.voice_vol = QSlider(Qt.Horizontal)
+        self.voice_vol.setRange(0, 200)
+        self.voice_vol.setValue(int(self.s.value("voice/volume", 100)))
+        g4 = QGridLayout()
+        g4.setHorizontalSpacing(14)
+        g4.setVerticalSpacing(12)
+        g4.addWidget(field("Microfone", self.mic_combo), 0, 0)
+        g4.addWidget(field("Modo", self.voice_mode), 0, 1)
+        g4.addWidget(field("Sensibilidade do microfone", self.sens, "Mais para a direita = capta voz mais baixa."), 1, 0)
+        g4.addWidget(field("Tecla para falar", self.ptt_key, "Funciona mesmo com o jogo em foco."), 1, 1)
+        g4.addWidget(field("Volume das vozes", self.voice_vol), 2, 0)
+        c4.body.addLayout(g4)
+        c4.body.addWidget(hint("<b>F9</b> liga/desliga o seu microfone a qualquer momento. Use fone de ouvido: "
+                               "sem fone, o microfone capta o som da caixa e os amigos ouvem eco."))
+        root.addWidget(c4)
+        self.voice_cb.toggled.connect(lambda *_: self.save_voice())
+        for w in (self.voice_mode, self.ptt_key, self.mic_combo):
+            w.currentIndexChanged.connect(lambda *_: self.save_voice())
+        for w in (self.sens, self.voice_vol):
+            w.valueChanged.connect(lambda *_: self.save_voice())
         root.addStretch()
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(scrollable(inner))
         self.mode.currentIndexChanged.connect(lambda _: self.update_pad_status())
-        self.sdl_base.valueChanged.connect(lambda _: self.update_pad_status())
         self.exe.editingFinished.connect(self.update_pad_status)
         self.update_pad_status()
 
@@ -327,7 +368,6 @@ class AdvancedPage(QWidget):
         s = self.s
         s.setValue("host/exe", self.exe.text())
         s.setValue("host/mode", self.mode.currentData())
-        s.setValue("host/sdl_base", self.sdl_base.value())
         s.setValue("host/quality", self.quality.currentIndex())
         s.setValue("host/codec", self.codec.currentData())
         s.setValue("host/bitrate", self.bitrate.value())
@@ -335,9 +375,26 @@ class AdvancedPage(QWidget):
         s.setValue("host/port", self.port.value())
         s.setValue("host/upnp", "true" if self.upnp_cb.isChecked() else "false")
 
+    def save_voice(self):
+        s = self.s
+        s.setValue("voice/on", "true" if self.voice_cb.isChecked() else "false")
+        s.setValue("voice/mic_name", self.mic_combo.currentText() if self.mic_combo.currentIndex() > 0 else "")
+        s.setValue("voice/ptt", "true" if self.voice_mode.currentData() else "false")
+        s.setValue("voice/ptt_key", self.ptt_key.currentText())
+        s.setValue("voice/sens", self.sens.value())
+        s.setValue("voice/volume", self.voice_vol.value())
+
+    def voice_cfg(self):
+        """Configuração da voz para a chamada, ou None se a voz estiver desligada."""
+        if not self.voice_cb.isChecked():
+            return None
+        return {"device": self.mic_combo.currentData(), "ptt": bool(self.voice_mode.currentData()),
+                "ptt_key": voice.PTT_KEYS[self.ptt_key.currentText()],
+                "threshold": -25.0 - self.sens.value() * 0.4, "volume": self.voice_vol.value() / 100}
+
     def locked_widgets(self):
         return [self.port, self.mode, self.quality, self.codec, self.bitrate, self.audio, self.area, self.upnp_cb,
-                self.btn_cfg, self.sdl_base]
+                self.btn_cfg, self.voice_cb, self.mic_combo]
 
     def _browse_exe(self):
         path, _ = QFileDialog.getOpenFileName(self, "Localizar pcsx2-qt.exe", self.exe.text(), "PCSX2 (*.exe)")
@@ -347,21 +404,37 @@ class AdvancedPage(QWidget):
             self.update_pad_status()
             self.main.host.refresh_games()
 
-    def detect_pads(self):
-        n = len(xinput.connected())
-        srv = self.main.host.server
-        if srv:
-            n = max(0, n - len(srv.pads))
-        self.sdl_base.setValue(n)
-        self.main.toast(f"{n} controle(s) físico(s) detectado(s).")
+    def expected_devices(self):
+        """(controle do host, [controles dos convidados], exato?) no formato do PCSX2 ('SDL-N').
+
+        O PCSX2 chama de SDL-N o controle XInput N. Com a sala aberta sabemos exatamente onde os controles
+        virtuais ficaram; com a sala fechada é uma previsão (as próximas posições livres).
+        """
+        n = len(pcsx2.MULTITAP_MODES[self.mode.currentData()]["slots"])
+        host = getattr(self.main, "host", None)
+        srv = host.server if host else None
+        connected = xinput.connected()
+        virt = list(srv.virtual_slots)[:n] if srv and srv.virtual_slots else []
+        exact = bool(virt)
+        phys = [i for i in connected if i not in virt]
+        if len(virt) < n:
+            free = [i for i in range(4) if i not in connected and i not in virt]
+            virt += free[: n - len(virt)]
+        host_dev = f"SDL-{phys[0]}" if phys else None
+        return host_dev, [f"SDL-{v}" for v in virt], exact
 
     def pad_problems(self):
         try:
-            return pcsx2.check_guest_pads(self.exe.text(), self.sdl_base.value(), self.mode.currentData())
+            host_dev, guests, _ = self.expected_devices()
+            return pcsx2.check_guest_pads(self.exe.text(), self.mode.currentData(), guests, host_dev)
         except Exception as e:
             return [f"não consegui ler a configuração do PCSX2 ({e})"]
 
     def update_pad_status(self):
+        host_dev, guests, exact = self.expected_devices()
+        you = f"<b>você</b> → {host_dev}" if host_dev else "<b>você</b> → (nenhum controle ligado agora)"
+        friends = " · ".join(f"<b>Jogador {i + 2}</b> → {d}" for i, d in enumerate(guests))
+        self.map_lbl.setText(f"{you} · {friends}" + ("" if exact else "<br><i>previsão — confirmada ao abrir a sala</i>"))
         problems = self.pad_problems()
         if problems:
             self.pad_icon.set("warn")
@@ -379,20 +452,76 @@ class AdvancedPage(QWidget):
                                                 "desfaria a alteração.")
             return False
         mode = self.mode.currentData()
-        n = len(pcsx2.MULTITAP_MODES[mode]["slots"])
+        host_dev, guests, _ = self.expected_devices()
         try:
-            ini, backup, done = pcsx2.configure_guest_pads(self.exe.text(), self.sdl_base.value(), mode, n)
+            ini, backup, done = pcsx2.configure_guest_pads(self.exe.text(), mode, guests, host_dev)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, str(e))
             return False
         self.save()
         self.logf(f"PCSX2 configurado ({ini.name}); backup em {backup.name}.")
         self.update_pad_status()
-        self.main.toast("PCSX2 configurado para os convidados ✓", "ok")
+        names = {"Pad1": "você"}
+        resumo = " · ".join(f"{names.get(sl, 'Jogador ' + str(i + (1 if done[0][0] == 'Pad1' else 2)))} = {d}"
+                            for i, (sl, d) in enumerate(done))
+        self.main.toast(f"Controles ajustados no PCSX2: {resumo}", "ok")
         if not quiet:
-            lines = "\n".join(f"Jogador {i + 2} → porta {pcsx2.SLOT_NAMES[s]} → {d}" for i, (s, d) in enumerate(done))
+            lines = "\n".join(("Jogador 1 (você)" if sl == "Pad1" else f"Porta {pcsx2.SLOT_NAMES[sl]}") + f" → {d}"
+                              for sl, d in done)
             QMessageBox.information(self, APP_NAME, f"Portas configuradas:\n\n{lines}\n\nBackup em:\n{backup}")
         return True
+
+
+# ============================================================================== VOZ (barra lateral)
+class LevelMeter(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.level = 0.0
+        self.active = False
+        self.setFixedHeight(6)
+
+    def set(self, level, active):
+        level = round(level, 2)
+        if (level, active) != (self.level, self.active):
+            self.level, self.active = level, active
+            self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#262b38"))
+        p.drawRoundedRect(self.rect(), 3, 3)
+        w = int(self.width() * self.level)
+        if w > 0:
+            p.setBrush(QColor(OK if self.active else "#4a5163"))
+            p.drawRoundedRect(QRect(0, 0, w, self.height()), 3, 3)
+
+
+class VoiceBar(QFrame):
+    """Mostra o estado do seu microfone na barra lateral, durante uma chamada."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        self.setStyleSheet("#card { background: #141823; border: 1px solid #242936; border-radius: 12px; }")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 8, 10, 10)
+        v.setSpacing(6)
+        top = QHBoxLayout()
+        self.btn = QPushButton("🎤")
+        self.btn.setObjectName("mini")
+        self.btn.setFixedWidth(40)
+        self.btn.setToolTip("Mutar / desmutar (F9)")
+        self.lbl = QLabel("Chamada de voz")
+        self.lbl.setStyleSheet("font-size: 9pt; font-weight: 600;")
+        self.lbl.setWordWrap(True)
+        top.addWidget(self.btn)
+        top.addWidget(self.lbl, 1)
+        v.addLayout(top)
+        self.meter = LevelMeter()
+        v.addWidget(self.meter)
+        self.hide()
 
 
 # ============================================================================== HOSPEDAR
@@ -405,9 +534,12 @@ class PlayerRow(QFrame):
         lay.setContentsMargins(12, 10, 12, 10)
         hue = (sum(map(ord, name)) * 47) % 360
         av = QLabel((name[:1] or "?").upper())
-        av.setFixedSize(38, 38)
+        av.setFixedSize(40, 40)
         av.setAlignment(Qt.AlignCenter)
-        av.setStyleSheet(f"background: hsl({hue}, 60%, 45%); border-radius: 19px; font-weight: 800; font-size: 13pt;")
+        self._av_style = f"background: hsl({hue}, 60%, 45%); border-radius: 20px; font-weight: 800; font-size: 13pt;"
+        av.setStyleSheet(self._av_style + "border: 3px solid transparent;")
+        self.av = av
+        self._speaking = False
         lay.addWidget(av)
         col = QVBoxLayout()
         col.setSpacing(0)
@@ -424,6 +556,11 @@ class PlayerRow(QFrame):
         kick.setObjectName("mini")
         kick.clicked.connect(lambda: kick_cb(slot_idx))
         lay.addWidget(kick)
+
+    def set_speaking(self, on):
+        if on != self._speaking:
+            self._speaking = on
+            self.av.setStyleSheet(self._av_style + ("border: 3px solid #51cf66;" if on else "border: 3px solid transparent;"))
 
     def update_stats(self, rtt, mbps, slot_label):
         c = OK if rtt < 60 else WARN if rtt < 120 else BAD
@@ -446,6 +583,11 @@ class HostPage(QWidget):
         self.bridge.log.connect(self._append_log)
         self.bridge.wan.connect(self._on_wan)
         self.bridge.approve.connect(self._ask_approval)
+        self.bridge.pcsx2_closed.connect(self._after_pcsx2_closed)
+        self.mic = None
+        self.voice_mix = None
+        self._pad_warned = None
+        self._pad_fixing = False
         adv.logf = self.logf
 
         inner = QWidget()
@@ -511,6 +653,21 @@ class HostPage(QWidget):
         c2.body.addLayout(r3)
         self.room_sub = hint("")
         c2.body.addWidget(self.room_sub)
+        # aviso quando os controles do PCSX2 estão trocados (aparece só quando precisa)
+        self.pad_banner = QFrame()
+        self.pad_banner.setStyleSheet("QFrame { background: rgba(252,196,25,0.10); border: 1px solid rgba(252,196,25,0.45);"
+                                      " border-radius: 10px; }")
+        pb = QHBoxLayout(self.pad_banner)
+        pb.setContentsMargins(12, 8, 8, 8)
+        self.pad_banner_lbl = QLabel()
+        self.pad_banner_lbl.setWordWrap(True)
+        self.pad_banner_lbl.setStyleSheet("border: none; background: transparent;")
+        self.btn_fix_pads = AnimButton("Corrigir agora", "ghost", height=34)
+        self.btn_fix_pads.clicked.connect(self.fix_pads_restart)
+        pb.addWidget(self.pad_banner_lbl, 1)
+        pb.addWidget(self.btn_fix_pads)
+        self.pad_banner.hide()
+        c2.body.addWidget(self.pad_banner)
         left.addWidget(c2)
 
         # 3 · Convite
@@ -570,6 +727,9 @@ class HostPage(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(1000)
+        self.talk_timer = QTimer(self)
+        self.talk_timer.timeout.connect(self._talk_tick)
+        self.talk_timer.start(100)
         self._set_room_ui()
 
     # ------------------------------------------------------------- log
@@ -621,6 +781,11 @@ class HostPage(QWidget):
         if pcsx2.is_running():
             self.main.toast("O PCSX2 já está aberto.", "warn")
             return
+        if not self.server:
+            self.main.toast("Abrindo a sala primeiro, para ligar os controles certos…")
+            self.toggle_server()
+            if not self.server:
+                return
         if not self.ensure_pads():
             return
         game = self.games.currentData() or None
@@ -633,6 +798,9 @@ class HostPage(QWidget):
         problems = self.adv.pad_problems()
         if not problems:
             return True
+        if not pcsx2.is_running():
+            # PCSX2 fechado: ajusta sozinho (você no Jogador 1, amigos nos controles virtuais)
+            return self.adv.configure_pcsx2(quiet=True)
         text = ("Os controles dos convidados ainda não estão configurados no PCSX2:\n\n• "
                 + "\n• ".join(problems) + "\n\nSem isso o PCSX2 abre, mas o seu amigo não controla nada no jogo.")
         if pcsx2.is_running():
@@ -749,6 +917,7 @@ class HostPage(QWidget):
     # ------------------------------------------------------------- servidor
     def toggle_server(self):
         if self.server:
+            self._stop_voice()
             self.server.stop()
             self.server = None
             self._set_room_ui()
@@ -766,8 +935,6 @@ class HostPage(QWidget):
             if ans == QMessageBox.Yes:
                 subprocess.Popen(["msiexec", "/i", str(msi)])
             return
-        if not self.ensure_pads():
-            return
         from host import HostServer
 
         a = self.adv
@@ -779,6 +946,7 @@ class HostPage(QWidget):
             "jpeg_quality": 75, "audio": a.audio.isChecked(), "game_area_only": a.area.currentIndex() == 0,
             "upnp": a.upnp_cb.isChecked(),
             "approve": self._approve_blocking if self.approve_cb.isChecked() else None,
+            "voice": a.voice_cfg() is not None, "host_name": getpass.getuser(),
         }
         self.s.setValue("host/password", self.password.text())
         self.s.setValue("host/approve", "true" if self.approve_cb.isChecked() else "false")
@@ -798,8 +966,10 @@ class HostPage(QWidget):
                 pass
             return
         self.server = server
+        self._start_voice()
         self._set_room_ui()
         self.main.toast("Sala aberta! Agora copie o convite 📋", "ok")
+        self.check_pad_mapping()
         if not pcsx2.is_running():
             self.logf("Dica: abra o jogo no PCSX2 — os convidados verão a janela dele.")
 
@@ -818,6 +988,9 @@ class HostPage(QWidget):
             self.rows.clear()
             self.empty.show()
             self.cap_lbl.setText("")
+            self.pad_banner.hide()
+            self._pad_warned = None
+        self.adv.update_pad_status()
         self._update_invite()
 
     def kick(self, slot_idx):
@@ -859,8 +1032,100 @@ class HostPage(QWidget):
         self.room_sub.setText(("Esperando amigos — mande o convite!" if not n else "Partida rolando!") + extra)
         self.cap_lbl.setText(f"Captura: {self.server.capture_status}"
                              + (f" · {self.server.capture_fps:.0f} fps" if n else ""))
+        self._pad_tick = getattr(self, "_pad_tick", 0) + 1
+        if self._pad_tick % 3 == 0:
+            self.check_pad_mapping()
+
+    # ------------------------------------------------------------- voz
+    def _start_voice(self):
+        vcfg = self.adv.voice_cfg()
+        if not vcfg or not self.server:
+            return
+        try:
+            self.voice_mix = voice.VoiceMixer(vcfg["volume"])
+            self.voice_mix.start()
+            self.server.on_voice = self.voice_mix.push
+        except Exception as e:
+            self.voice_mix = None
+            self.logf(f"Voz: não consegui abrir a saída de som ({e}).")
+        try:
+            self.mic = voice.Mic(self.server.send_voice, vcfg["device"])
+            self.mic.ptt_mode = vcfg["ptt"]
+            self.mic.threshold_db = vcfg["threshold"]
+            self.mic.start()
+            self.logf(f"Chamada de voz ligada · microfone: {self.mic.device_name}. F9 muta/desmuta.")
+        except Exception as e:
+            self.mic = None
+            self.logf(f"Voz: não consegui abrir o microfone ({e}). Você ainda ouve os amigos.")
+            self.main.toast("Microfone não encontrado — você só vai ouvir a chamada.", "warn")
+
+    def _stop_voice(self):
+        for x in (self.mic, self.voice_mix):
+            if x:
+                try:
+                    x.stop()
+                except Exception:
+                    pass
+        self.mic = self.voice_mix = None
+
+    def _talk_tick(self):
+        if not self.voice_mix:
+            return
+        for slot, row in self.rows.items():
+            row.set_speaking(self.voice_mix.speaking(slot + 1))
+
+    # ------------------------------------------------------------- controles do PCSX2
+    def check_pad_mapping(self):
+        """Com a sala aberta: confere se o PCSX2 liga você ao seu controle e cada amigo ao controle virtual dele."""
+        if not self.server or self._pad_fixing:
+            return
+        self.adv.update_pad_status()
+        problems = self.adv.pad_problems()
+        if not problems:
+            self.pad_banner.hide()
+            self._pad_warned = None
+            return
+        if not pcsx2.is_running():
+            self.adv.configure_pcsx2(quiet=True)      # PCSX2 fechado: corrige sem perguntar
+            self.pad_banner.hide()
+            return
+        host_dev, guests, _ = self.adv.expected_devices()
+        self.pad_banner_lbl.setText("⚠ <b>Os controles no PCSX2 estão trocados.</b> Para você ficar no Jogador 1 "
+                                    f"({host_dev or '?'}) e o amigo no Jogador 2 ({guests[0]}), o PCSX2 precisa "
+                                    "reabrir. <b>Salve o jogo antes.</b>")
+        self.pad_banner.show()
+        sig = (host_dev, tuple(guests))
+        if sig != self._pad_warned:
+            self._pad_warned = sig
+            self.logf("Controles do PCSX2 trocados: " + "; ".join(problems))
+            self.main.toast("Os controles no PCSX2 estão trocados — veja o aviso em Hospedar.", "warn")
+
+    def fix_pads_restart(self):
+        ans = QMessageBox.question(self, APP_NAME, "Para corrigir os controles, o PCSX2 vai fechar e abrir de novo "
+                                   "com o mesmo jogo.\n\nSALVE O JOGO ANTES (o PCSX2 pode perguntar se você "
+                                   "quer mesmo sair).\n\nContinuar?")
+        if ans != QMessageBox.Yes:
+            return
+        self._pad_fixing = True
+        self.btn_fix_pads.setEnabled(False)
+        self.main.toast("Fechando o PCSX2…")
+        threading.Thread(target=lambda: self.bridge.pcsx2_closed.emit(pcsx2.close_gracefully(90)), daemon=True).start()
+
+    def _after_pcsx2_closed(self, ok):
+        self._pad_fixing = False
+        self.btn_fix_pads.setEnabled(True)
+        if not ok:
+            self.main.toast("O PCSX2 não fechou. Feche ele e clique em Corrigir de novo.", "warn")
+            return
+        if self.adv.configure_pcsx2(quiet=True):
+            self.pad_banner.hide()
+            self._pad_warned = None
+            game = self.s.value("host/game", "") or None
+            pcsx2.launch(self.adv.exe.text(), game, self.fullscreen.isChecked())
+            self.main.toast("Controles corrigidos! Reabrindo o PCSX2…", "ok")
 
     def shutdown(self):
+        self._stop_voice()
         if self.server:
             self.server.stop()
             self.server = None
@@ -1055,6 +1320,17 @@ class JoinPage(QWidget):
         left.addWidget(c1)
         left.addStretch()
 
+        self.call_card = Card("Na chamada")
+        self.call_box = QVBoxLayout()
+        self.call_box.setSpacing(4)
+        self.call_card.body.addLayout(self.call_box)
+        self.call_rows = {}
+        self.call_card.hide()
+        right.addWidget(self.call_card)
+        self.call_timer = QTimer(self)
+        self.call_timer.timeout.connect(self._call_tick)
+        self.call_timer.start(100)
+
         c2 = Card("Seu controle")
         self.pad = QComboBox()
         self.pad.addItem("Automático (primeiro controle encontrado)", -1)
@@ -1188,7 +1464,9 @@ class JoinPage(QWidget):
         self.s.setValue("guest/pad", self.pad.currentData())
         from guest import GuestClient
 
-        self.client = GuestClient(host, port, name, pw, self.pad.currentData(), self.volume.value() / 100)
+        self.client = GuestClient(host, port, name, pw, self.pad.currentData(), self.volume.value() / 100,
+                                  voice_cfg=self.main.adv.voice_cfg())
+        self.client.roster_changed.connect(self._rebuild_call)
         self.client.welcome.connect(self._on_welcome)
         self.client.waiting.connect(lambda: self._state("busy", f"Aguardando <b>{html.escape(who)}</b> aceitar…"))
         self.client.failed.connect(self._on_failed)
@@ -1202,6 +1480,12 @@ class JoinPage(QWidget):
         extra = "" if info.get("audio") else " · sem áudio"
         if info.get("audio_error"):
             extra = f" · áudio falhou: {info['audio_error']}"
+        if info.get("voice_error"):
+            extra += f" · voz falhou: {info['voice_error']}"
+        elif info.get("voice") and self.client and self.client.mic:
+            extra += " · 🎤 voz ligada (F9 muta)"
+        elif not info.get("voice"):
+            extra += " · o host está sem chamada de voz"
         self._state("ok", f"<b>Conectado como Jogador {info['player']}</b> · porta {info['slot']}{extra}")
         self.btn.setText("Sair da sala")
         self.btn.set_variant("danger")
@@ -1211,6 +1495,33 @@ class JoinPage(QWidget):
         self.window.closed.connect(lambda: setattr(self, "window", None))
         self.window.show()
         self.window.activateWindow()
+
+    def _rebuild_call(self, roster):
+        for row in self.call_rows.values():
+            row.deleteLater()
+        self.call_rows = {}
+        me = self.client.my_id if self.client else None
+        for sid in sorted(roster):
+            name = roster[sid] + (" (você)" if sid == me else " (host)" if sid == 0 else "")
+            lab = QLabel()
+            lab.setProperty("nm", html.escape(name))
+            self.call_box.addWidget(lab)
+            self.call_rows[sid] = lab
+        self.call_card.setVisible(bool(roster) and bool(self.client and self.client.voice))
+
+    def _call_tick(self):
+        c = self.client
+        if not c or not c.voice or not self.call_rows:
+            if self.call_card.isVisible() and not (c and c.voice):
+                self.call_card.hide()
+            return
+        for sid, lab in self.call_rows.items():
+            talking = (c.mic.talking if c.mic else False) if sid == c.my_id else c.voice.speaking(sid)
+            dot = OK if talking else "#3a4152"
+            txt = f"<span style='color:{dot}; font-size:14pt'>●</span> {lab.property('nm')}" + (
+                "  <span style='color:#51cf66'>falando…</span>" if talking else "")
+            if lab.text() != txt:
+                lab.setText(txt)
 
     def _on_failed(self, msg):
         self._set_idle(msg)
@@ -1302,7 +1613,7 @@ class ControllersPage(QWidget):
                 any_phys = True
                 n += 1
                 card.view.set_state(st)
-                card.sub.setText(f"XInput {i + 1} · no PCSX2 do host costuma ser SDL-{n - 1}")
+                card.sub.setText(f"XInput {i + 1} · no PCSX2: SDL-{i}")
         self.no_phys.setVisible(not any_phys)
 
         clients = {c["slot_idx"]: c for c in srv.snapshot()} if srv else {}
@@ -1314,9 +1625,9 @@ class ControllersPage(QWidget):
             c = clients.get(i)
             card.view.set_state(srv.pad_state(i) if c else None)
             slot = pcsx2.SLOT_NAMES[srv.slots[i]]
-            sdl = self.main.adv.sdl_base.value() + i
+            sdl = srv.virtual_slots[i] if i < len(srv.virtual_slots) else "?"
             who = f"<b>{html.escape(c['name'])}</b> · {c['rtt']:.0f} ms" if c else "livre — aguardando amigo"
-            card.sub.setText(f"{who}<br>porta {slot} · SDL-{sdl}")
+            card.sub.setText(f"{who}<br>porta {slot} · no PCSX2: SDL-{sdl}")
         self.no_virt.setVisible(not srv)
 
 
@@ -1455,10 +1766,25 @@ como se todos estivessem no mesmo sofá.</p>
 <p>O app abre a porta no roteador sozinho (UPnP) e a fecha quando você sai. Mas se a sua operadora usa
 <b>CGNAT</b> (IP do roteador começando com 100.64–100.127), só amigos da <b>mesma operadora</b> conseguem
 entrar assim. Para os outros, usem <b>Radmin VPN</b> ou <b>Tailscale</b>: o convite passa a usar o IP da VPN.</p>
+<h2>Chamada de voz</h2>
+<ul>
+<li>Liga sozinha quando a sala abre (host) ou quando você entra (convidado). Todo mundo ouve todo mundo, junto
+com o som do jogo.</li>
+<li><b>F9</b> muta/desmuta o seu microfone, mesmo com o jogo em foco. O botão 🎤 na barra lateral faz o mesmo.</li>
+<li>Em <b>Avançado → Chamada de voz</b>: microfone, sensibilidade, volume das vozes e o modo
+<b>apertar para falar</b> (ex.: segurar CapsLock).</li>
+<li>Quem está falando aparece com um anel verde (host) ou "falando…" na lista da chamada (convidado).</li>
+<li>Use <b>fone de ouvido</b>: sem fone, o microfone capta a caixa de som e os outros ouvem eco.</li>
+</ul>
+<h2>Controles no PCSX2</h2>
+<p>Ao abrir a sala, o app descobre qual controle é o seu e qual é o de cada amigo e ajusta o PCSX2 sozinho
+(você no Jogador 1). Se o PCSX2 já estiver aberto com os controles trocados, aparece um aviso em
+<b>Hospedar</b> com o botão <b>Corrigir agora</b>, que reabre o PCSX2 no mesmo jogo — salve antes.</p>
 <h2>Dicas</h2>
 <ul>
 <li>Travando? Em <b>Avançado</b>, baixe a qualidade ou a taxa de vídeo, ou use o codificador da sua placa de vídeo.</li>
-<li>O áudio enviado é o som do PC inteiro do host — use fone se estiverem em chamada.</li>
+<li>O som do jogo enviado aos amigos é o som do PC do host, <b>menos o próprio PS2 Online</b> (a voz da chamada
+não volta como eco). Outros programas tocando (Spotify, Discord) vão junto.</li>
 <li>A aba <b>Controles</b> mostra ao vivo se o controle de cada amigo está chegando.</li>
 <li>Ping abaixo de ~60 ms é ótimo; acima de 120 ms jogos de luta ficam difíceis.</li>
 </ul>
@@ -1520,6 +1846,13 @@ class MainWindow(QMainWindow):
             self.sidebar.add(label)
             self.stack.addWidget(page)
         self.sidebar.lay.addStretch()
+        self.voice_bar = VoiceBar()
+        self.voice_bar.btn.clicked.connect(self.toggle_mute)
+        self.sidebar.lay.addWidget(self.voice_bar)
+        self._f9 = False
+        self.voice_timer = QTimer(self)
+        self.voice_timer.timeout.connect(self._voice_tick)
+        self.voice_timer.start(20)
         pill = QWidget()
         pl = QHBoxLayout(pill)
         pl.setContentsMargins(4, 0, 4, 0)
@@ -1616,6 +1949,59 @@ class MainWindow(QMainWindow):
         self.act_room.setText("Fechar sala" if srv else "Abrir sala")
         self.tray.setToolTip(f"{APP_NAME}\n{text}")
 
+    # ------------------------------------------------------------- voz
+    def _call(self):
+        """(microfone, mixer) da chamada atual, como host ou como convidado."""
+        if self.host.server:
+            return self.host.mic, self.host.voice_mix
+        c = self.join.client
+        if c:
+            return c.mic, c.voice
+        return None, None
+
+    def toggle_mute(self):
+        mic, _ = self._call()
+        if mic:
+            mic.muted = not mic.muted
+            self.toast("🔇 Microfone mutado (F9 para voltar)" if mic.muted else "🎤 Microfone ligado",
+                       "warn" if mic.muted else "ok")
+
+    def _voice_tick(self):
+        mic, mix = self._call()
+        f9 = voice.key_down(voice.MUTE_KEY)
+        if f9 and not self._f9 and mic:
+            self.toggle_mute()
+        self._f9 = f9
+        if not (mic or mix):
+            if self.voice_bar.isVisible():
+                self.voice_bar.hide()
+            return
+        self.voice_bar.show()
+        cfg = self.adv.voice_cfg()
+        if cfg and mix:
+            mix.volume = cfg["volume"]
+        if not mic:
+            self.voice_bar.btn.setText("🔇")
+            self.voice_bar.lbl.setText("Sem microfone — só ouvindo")
+            self.voice_bar.meter.set(0, False)
+            return
+        if cfg:
+            mic.ptt_mode = cfg["ptt"]
+            mic.threshold_db = cfg["threshold"]
+            mic.ptt_down = cfg["ptt"] and voice.key_down(cfg["ptt_key"])
+        self.voice_bar.btn.setText("🔇" if mic.muted else "🎤")
+        if mic.muted:
+            txt = "Mutado · F9 para falar"
+        elif mic.ptt_mode and not mic.ptt_down:
+            txt = f"Segure {self.adv.ptt_key.currentText()} para falar"
+        elif mic.talking:
+            txt = "Falando…"
+        else:
+            txt = "Microfone ligado"
+        if self.voice_bar.lbl.text() != txt:
+            self.voice_bar.lbl.setText(txt)
+        self.voice_bar.meter.set(0 if mic.muted else mic.level, mic.talking)
+
     def show_window(self):
         self.showNormal()
         self.raise_()
@@ -1650,7 +2036,7 @@ def selftest(out_path):
 
     lines = []
     app = QCoreApplication(sys.argv)
-    pcsx2.find_game_area = lambda game_area_only=True: ({"left": 0, "top": 0, "width": 640, "height": 480}, None)
+    pcsx2.find_game_area = lambda game_area_only=True: ({"left": 0, "top": 0, "width": 1280, "height": 720}, None)
     before = set(xinput.connected())
     try:
         srv = hostmod.HostServer({"port": 27999, "password": "t", "mode": "off", "codec": "libx264", "height": 480,

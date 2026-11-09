@@ -4,7 +4,7 @@ import socket
 import struct
 import threading
 
-VERSION = 2
+VERSION = 3
 DEFAULT_PORT = 27900
 MAX_MSG = 8 * 1024 * 1024
 
@@ -21,6 +21,8 @@ RUMBLE = 9     # host -> convidado  (motor grande, motor pequeno)
 KEYREQ = 10    # convidado -> host  (pede keyframe)
 BYE = 11
 PENDING = 12   # host -> convidado  (aguardando o host aprovar a entrada)
+VOICE = 13     # voz Opus. convidado -> host: pacote; host -> convidado: [quem fala (1 byte)] + pacote
+ROSTER = 14    # host -> convidado  (json {id: nome} de quem está na chamada)
 
 CODEC_H264 = 1
 CODEC_JPEG = 2

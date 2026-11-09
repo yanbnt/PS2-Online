@@ -4,3 +4,4 @@ mss
 av>=12
 PyAudioWPatch
 vgamepad
+comtypes

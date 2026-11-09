@@ -3,6 +3,7 @@ import collections
 import fractions
 import hmac
 import json
+import os
 import socket
 import threading
 import time
@@ -14,9 +15,10 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QImage
 
 import pcsx2
+import procloop
 import upnp
 from protocol import (AUDIO, BYE, CODEC_H264, CODEC_JPEG, HELLO, INPUT, KEYREQ, PAD, PENDING, PING, PING_S,
-                      PONG, REJECT, RUMBLE, RUMBLE_S, VERSION, VIDEO, VIDEO_HDR, WELCOME, Conn)
+                      PONG, REJECT, ROSTER, RUMBLE, RUMBLE_S, VERSION, VIDEO, VIDEO_HDR, VOICE, WELCOME, Conn)
 
 APPROVAL_TIMEOUT = 90  # segundos para o host aceitar/recusar
 
@@ -96,6 +98,7 @@ class Client:
         self.video_q = collections.deque()
         self.jpeg_latest = None
         self.audio_q = collections.deque(maxlen=40)
+        self.voice_q = collections.deque(maxlen=60)
         self.need_key = True
         self.alive = True
         self.rtt = 0.0
@@ -125,6 +128,8 @@ class HostServer:
         self._pending = 0
         self._reserved = set()           # vagas de quem está esperando aprovação
         self.virtual_slots = []
+        self.on_voice = None             # callable(quem_fala, pacote_opus) — toca a voz no host
+        self._ploop = None
         self.approve = cfg.get("approve")  # callable(nome, ip) -> bool, ou None
         self.upnp_status = ""
         self.wan_ip = None
@@ -250,6 +255,9 @@ class HostServer:
         for c in clients:
             self._drop(c)
         self._upnp_close()
+        if self._ploop:
+            self._ploop.stop()
+            self._ploop = None
         if self._astream:
             try:
                 self._astream.stop_stream()
@@ -294,6 +302,16 @@ class HostServer:
 
     # ------------------------------------------------------------- áudio
     def _start_audio(self):
+        if procloop.supported():
+            try:
+                self._ploop = procloop.ProcessLoopback(os.getpid(), exclude=True, callback=self._broadcast_audio)
+                self._ploop.start()
+                self.audio_fmt = {"rate": procloop.RATE, "channels": procloop.CHANNELS}
+                self.log("Capturando o som do PC sem o som do PS2 Online (a voz da chamada não volta como eco).")
+                return
+            except Exception as e:
+                self._ploop = None
+                self.log(f"Captura de áudio sem eco indisponível ({e}); usando a captura comum.")
         import pyaudiowpatch as pyaudio
 
         self._pa = pyaudio.PyAudio()
@@ -414,10 +432,13 @@ class HostServer:
                 "slot": pcsx2.SLOT_NAMES.get(slot_name, slot_name),
                 "audio": self.audio_fmt,
                 "codec": "jpeg" if self.cfg["codec"] == "jpeg" else "h264",
+                "voice": bool(self.cfg.get("voice")),
+                "you": client.slot_idx + 1,
             })
             self.force_key = True
             self.log(f"{name} ({addr[0]}) entrou como Jogador {player_no}.")
             threading.Thread(target=self._sender, args=(client,), daemon=True).start()
+            self._broadcast_roster()
 
             pad = self.pads[client.slot_idx]
             while self.running and client.alive:
@@ -432,6 +453,8 @@ class HostServer:
                     conn.send(PONG, payload)
                     if len(payload) == PING_S.size:
                         client.rtt = PING_S.unpack(payload)[1]
+                elif mtype == VOICE and self.cfg.get("voice") and 0 < len(payload) < 1500:
+                    self._route_voice(client.slot_idx + 1, payload, exclude=client)
                 elif mtype == KEYREQ:
                     with client.cond:
                         client.video_q.clear()
@@ -462,19 +485,28 @@ class HostServer:
                         self.pads[c.slot_idx].update()
                     except Exception:
                         pass
+                removed = True
+            else:
+                removed = False
         c.conn.close()
+        if removed and self.running:
+            self._broadcast_roster()
 
     def _sender(self, c: Client):
         try:
             while c.alive and self.running:
                 with c.cond:
-                    while c.alive and not (c.video_q or c.audio_q or c.jpeg_latest):
+                    while c.alive and not (c.video_q or c.audio_q or c.jpeg_latest or c.voice_q):
                         c.cond.wait(0.5)
+                    voices = list(c.voice_q)
+                    c.voice_q.clear()
                     audio = list(c.audio_q)
                     c.audio_q.clear()
                     vids = list(c.video_q)
                     c.video_q.clear()
                     jpg, c.jpeg_latest = c.jpeg_latest, None
+                for v in voices:
+                    c.conn.send(VOICE, v)
                 for a in audio:
                     c.conn.send(AUDIO, a)
                     c.bytes_sent += len(a)
@@ -488,6 +520,41 @@ class HostServer:
             pass
         finally:
             self._drop(c)
+
+    # ------------------------------------------------------------- voz
+    def send_voice(self, data: bytes):
+        """Microfone do host -> todos os convidados."""
+        self._route_voice(0, data)
+
+    def _route_voice(self, speaker: int, data: bytes, exclude=None):
+        if speaker != 0 and self.on_voice:
+            try:
+                self.on_voice(speaker, data)
+            except Exception:
+                pass
+        msg = bytes([speaker]) + data
+        with self.clients_lock:
+            clients = [c for c in self.clients.values() if c is not exclude]
+        for c in clients:
+            with c.cond:
+                c.voice_q.append(msg)
+                c.cond.notify()
+
+    def roster(self):
+        with self.clients_lock:
+            r = {str(c.slot_idx + 1): c.name for c in self.clients.values()}
+        r["0"] = self.cfg.get("host_name") or "Host"
+        return r
+
+    def _broadcast_roster(self):
+        r = self.roster()
+        with self.clients_lock:
+            clients = list(self.clients.values())
+        for c in clients:
+            try:
+                c.conn.send_json(ROSTER, r)
+            except Exception:
+                pass
 
     def _send_rumble(self, slot_idx, large, small):
         with self.clients_lock:

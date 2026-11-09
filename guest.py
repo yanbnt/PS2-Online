@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QImage
 
 import xinput as xi
-from protocol import (AUDIO, BYE, CODEC_H264, HELLO, INPUT, KEYREQ, PAD, PENDING, PING, PING_S, PONG, REJECT,
+from protocol import (AUDIO, BYE, CODEC_H264, HELLO, INPUT, KEYREQ, PAD, PENDING, PING, PING_S, PONG, REJECT, ROSTER, VOICE,
                       RUMBLE, RUMBLE_S, VERSION, VIDEO, VIDEO_HDR, WELCOME, Conn)
 
 K = Qt.Key
@@ -102,12 +102,18 @@ class GuestClient(QObject):
     frame = Signal(QImage)
     welcome = Signal(dict)
     waiting = Signal()
+    roster_changed = Signal(object)
     failed = Signal(str)
     disconnected = Signal(str)
     stats = Signal(dict)
 
-    def __init__(self, host, port, name, password, pad_index=-1, volume=1.0):
+    def __init__(self, host, port, name, password, pad_index=-1, volume=1.0, voice_cfg=None):
         super().__init__()
+        self.voice_cfg = voice_cfg      # None = sem voz; senão {"device", "ptt", "threshold", "volume"}
+        self.mic = None
+        self.voice = None
+        self.my_id = None
+        self.roster = {}
         self.host, self.port, self.name, self.password = host, port, name, password
         self.pad_index = pad_index      # -1 = automático, -2 = só teclado, 0..3 = XInput fixo
         self.volume = volume
@@ -137,6 +143,33 @@ class GuestClient(QObject):
             pass
         if self.conn:
             self.conn.close()
+
+    # ------------------------------------------------------------- voz
+    def _start_voice(self):
+        from voice import Mic, VoiceMixer
+        cfg = self.voice_cfg
+        self.voice = VoiceMixer(cfg.get("volume", 1.0))
+        self.voice.start()
+
+        def send(pkt):
+            try:
+                self.conn.send(VOICE, pkt)
+            except Exception:
+                pass
+
+        self.mic = Mic(send, cfg.get("device"))
+        self.mic.ptt_mode = cfg.get("ptt", False)
+        self.mic.threshold_db = cfg.get("threshold", -45.0)
+        self.mic.start()
+
+    def _stop_voice(self):
+        for x in (self.mic, self.voice):
+            if x:
+                try:
+                    x.stop()
+                except Exception:
+                    pass
+        self.mic = self.voice = None
 
     def set_keys(self, keys):
         self.keys = frozenset(keys)
@@ -174,6 +207,12 @@ class GuestClient(QObject):
                     self.audio.volume = self.volume
                 except Exception as e:
                     info["audio_error"] = str(e)
+            self.my_id = info.get("you")
+            if info.get("voice") and self.voice_cfg is not None:
+                try:
+                    self._start_voice()
+                except Exception as e:
+                    info["voice_error"] = str(e)
             self.welcome.emit(info)
             threading.Thread(target=self._input_loop, daemon=True).start()
             bye = self._recv_loop()
@@ -193,6 +232,7 @@ class GuestClient(QObject):
             reason = "A conexão com o host caiu." if self.running else "Desconectado."
         finally:
             self.running = False
+            self._stop_voice()
             if self.audio:
                 self.audio.close()
                 self.audio = None
@@ -239,6 +279,15 @@ class GuestClient(QObject):
                 large, small = RUMBLE_S.unpack(payload)
                 if self._active_pad is not None:
                     xi.set_vibration(self._active_pad, large, small)
+            elif mtype == VOICE:
+                if self.voice and len(payload) > 1:
+                    self.voice.push(payload[0], payload[1:])
+            elif mtype == ROSTER:
+                try:
+                    self.roster = {int(k): v for k, v in json.loads(payload.decode("utf-8")).items()}
+                    self.roster_changed.emit(self.roster)
+                except ValueError:
+                    pass
             elif mtype == BYE:
                 return payload.decode("utf-8", "replace") or "O host fechou a sala."
             now = time.perf_counter()
