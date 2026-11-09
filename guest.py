@@ -214,9 +214,11 @@ class GuestClient(QObject):
                 if codec == CODEC_H264:
                     try:
                         for fr in decoder.decode(av.Packet(data)):
-                            arr = fr.to_ndarray(format="rgb24")
+                            # larguras como 854 vêm com "padding" por linha (array não contíguo):
+                            # copia para memória contínua antes de montar o QImage
+                            arr = np.ascontiguousarray(fr.to_ndarray(format="rgb24"))
                             h, w = arr.shape[:2]
-                            img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+                            img = QImage(arr.data, w, h, arr.strides[0], QImage.Format.Format_RGB888).copy()
                     except Exception:
                         now = time.perf_counter()
                         if now - self._last_keyreq > 0.5:

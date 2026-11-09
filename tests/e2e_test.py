@@ -8,7 +8,8 @@ import pcsx2, xinput
 import host as hostmod
 from guest import GuestClient
 
-pcsx2.find_game_area = lambda game_area_only=True: ({"left": 0, "top": 0, "width": 800, "height": 600}, None)
+W, H = (int(x) for x in (sys.argv[2] if len(sys.argv) > 2 else "800x600").split("x"))
+pcsx2.find_game_area = lambda game_area_only=True: ({"left": 0, "top": 0, "width": W, "height": H}, None)
 
 app = QCoreApplication([])
 logs = []

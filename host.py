@@ -35,7 +35,7 @@ ENCODERS = {
 
 
 def _jpeg(src: av.VideoFrame, w, h, quality) -> bytes:
-    arr = src.reformat(width=w, height=h, format="rgb24", interpolation="AREA").to_ndarray()
+    arr = np.ascontiguousarray(src.reformat(width=w, height=h, format="rgb24", interpolation="AREA").to_ndarray())
     img = QImage(arr.data, w, h, arr.strides[0], QImage.Format.Format_RGB888)
     ba = QByteArray()
     buf = QBuffer(ba)
@@ -130,6 +130,7 @@ class HostServer:
         self.wan_ip = None
         self._upnp_gw = None
         self._upnp_mapped = False
+        self.external_port = None   # porta aberta no roteador (pode diferir da porta local)
 
     # ------------------------------------------------------------- UPnP
     def _upnp_open(self):
@@ -141,26 +142,44 @@ class HostServer:
                 self.wan_ip = gw.external_ip()
             except Exception:
                 pass
-            existing = gw.get_port(port)
-            if existing and existing[0] != gw.local_ip:
-                self.upnp_status = f"porta {port} já aponta para outro PC ({existing[0]})"
-                self.log(f"UPnP: a porta {port} do roteador já está ligada a {existing[0]}. Escolha outra porta.")
-                return
-            if not existing:
-                gw.add_port(port)
-                self._upnp_mapped = True
-            self.upnp_status = f"porta {port} aberta no roteador"
             wan = f" (IP do roteador: {self.wan_ip} — {upnp.describe_wan(self.wan_ip)})" if self.wan_ip else ""
-            self.log(f"UPnP: porta {port} aberta no roteador automaticamente{wan}.")
+            existing = gw.get_port(port)
+            if existing and existing[0] == gw.local_ip:
+                self.external_port = port
+                self.upnp_status = f"porta {port} aberta no roteador"
+                self.log(f"UPnP: a porta {port} já estava aberta para este PC{wan}.")
+                return
+            # tenta a porta padrão; se o roteador recusar (ex.: já existe uma regra manual nela),
+            # usa uma porta externa alternativa que aponta para a mesma porta interna
+            for ext in [port] + list(range(port + 1, port + 11)):
+                if ext != port and gw.get_port(ext):
+                    continue
+                try:
+                    gw.add_port(ext, internal_port=port)
+                except Exception as e:
+                    if ext == port:
+                        self.log(f"UPnP: o roteador recusou a porta {port} ({e}) — talvez já exista uma regra "
+                                 f"manual para ela. Tentando uma porta alternativa…")
+                    continue
+                self._upnp_mapped = True
+                self.external_port = ext
+                self.upnp_status = (f"porta {port} aberta no roteador" if ext == port else
+                                    f"porta externa {ext} → {port} aberta no roteador")
+                self.log(f"UPnP: {self.upnp_status}{wan}. O convite já usa essa porta.")
+                return
+            self.upnp_status = "UPnP: roteador recusou abrir a porta"
+            self.log(f"UPnP: o roteador não deixou abrir nenhuma porta. Se você criou a regra manual da porta "
+                     f"{port}, está tudo certo; senão, use Radmin VPN ou Tailscale.")
         except Exception as e:
             self.upnp_status = "UPnP indisponível"
             self.log(f"UPnP indisponível ({e}). Se precisar, abra a porta {port} manualmente no roteador.")
 
     def _upnp_close(self):
         if self._upnp_gw and self._upnp_mapped:
+            ext = self.external_port or self.cfg["port"]
             try:
-                self._upnp_gw.delete_port(self.cfg["port"])
-                self.log(f"UPnP: porta {self.cfg['port']} fechada no roteador.")
+                self._upnp_gw.delete_port(ext)
+                self.log(f"UPnP: porta {ext} fechada no roteador.")
             except Exception as e:
                 self.log(f"UPnP: não consegui fechar a porta ({e}).")
         self._upnp_mapped = False
@@ -481,6 +500,18 @@ class HostServer:
 
     # ------------------------------------------------------------- captura
     def _capture_loop(self):
+        """Roda a captura e, se der qualquer erro, registra e recomeça (nunca morre em silêncio)."""
+        while self.running:
+            try:
+                self._capture_inner()
+                return
+            except Exception as e:
+                self.capture_status = f"erro na captura: {e}"
+                self.log(f"Erro na captura de vídeo ({type(e).__name__}: {e}). Tentando de novo…")
+                self.force_key = True
+                time.sleep(1)
+
+    def _capture_inner(self):
         fps = self.cfg["fps"]
         interval = 1.0 / fps
         encoder = None

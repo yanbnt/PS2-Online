@@ -31,7 +31,7 @@ from widgets import (ACCENT, BAD, MUTED, OK, WARN, AnimButton, Card, FadeStack, 
                      PulseDot, Sidebar, Spinner, StatusIcon, Toast, field)
 
 APP_NAME = "PS2 Online"
-APP_VERSION = "1.2"
+APP_VERSION = "1.2.1"
 APPROVAL_TIMEOUT = 90
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
@@ -689,6 +689,9 @@ class HostPage(QWidget):
         if not ip:
             return None
         port = self.server.cfg["port"] if self.server else self.adv.port.value()
+        # pelo IP do roteador, usa a porta que o UPnP conseguiu abrir (pode ser alternativa)
+        if self.server and ip == self.wan_ip and self.server.external_port:
+            port = self.server.external_port
         return invite.encode(ip, port, self.password.text(), getpass.getuser())
 
     def _update_invite(self, *_):
@@ -846,6 +849,9 @@ class HostPage(QWidget):
             slot_name = pcsx2.SLOT_NAMES[self.server.slots[slot]]
             self.rows[slot].update_stats(c["rtt"], mbps, f"Jogador {slot + 2} · porta {slot_name}")
         self.empty.setVisible(not snap)
+        if self.server.external_port != getattr(self, "_shown_ext", None):
+            self._shown_ext = self.server.external_port
+            self._update_invite()      # UPnP terminou: o convite passa a usar a porta aberta
         n, total = len(snap), len(self.server.slots)
         self.dot.set_state(OK, True)
         self.room_lbl.setText(f"Sala aberta · {n}/{total}")
