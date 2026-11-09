@@ -58,14 +58,16 @@ python app.py
 | `pcsx2.py` | `PCSX2.ini`, lista de jogos e localização da janela |
 | `protocol.py` | Protocolo TCP |
 | `xinput.py` | Controles XInput (ctypes) |
-| `installer/installer.py` | Instalador (tkinter) |
-| `build.ps1` | Gera o app e o instalador com PyInstaller |
+| `installer/PS2Online.iss` | Instalador (Inno Setup): atalhos, driver ViGEmBus e desinstalador |
+| `build.ps1` | Gera o app (PyInstaller, modo pasta) e o instalador (Inno Setup) |
 | `tests/e2e_test.py` | Teste ponta a ponta: host e convidado no mesmo PC |
 
-Para gerar o instalador:
+Para gerar o instalador, é preciso o [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
+
+> Não use o PyInstaller `--onefile` para o instalador. O Windows Defender marca esse tipo de `.exe` como `Trojan:Win32/Wacatac.B!ml` (falso positivo da detecção por IA). O app em modo pasta e o instalador do Inno Setup passam limpos.
 
 O app tem um autoteste embutido: `"PS2 Online.exe" --selftest resultado.txt`.

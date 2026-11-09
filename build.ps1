@@ -29,13 +29,13 @@ $qt = "$work\dist\PS2 Online\_internal\PySide6"
 Get-ChildItem "$qt\plugins" -Recurse -File | Where-Object { $_.Name -match 'qpdf|virtualkeyboard' } | Remove-Item
 Copy-Item "$proj\LEIAME.md" "$work\dist\PS2 Online\LEIAME.md"
 
-# 2) Instalador (app compactado dentro de um .exe único)
-New-Item -ItemType Directory -Force "$work\payload" | Out-Null
-Compress-Archive -Path "$work\dist\PS2 Online" -DestinationPath "$work\payload\payload.zip" -CompressionLevel Optimal
-& $pi --noconfirm --onefile --windowed --name "Instalar PS2 Online" --icon "$proj\icon.ico" `
-    --add-data "$work\payload\payload.zip;." --add-data "$proj\icon.ico;." --exclude-module numpy --exclude-module PySide6 `
-    --workpath "$work\ibuild" --distpath "$work\idist" --specpath "$work\ibuild" --log-level ERROR "$proj\installer\installer.py"
-
+# 2) Instalador com Inno Setup (https://jrsoftware.org/isinfo.php — winget install JRSoftware.InnoSetup)
+#    Um instalador "PyInstaller --onefile" é marcado como Trojan:Win32/Wacatac.B!ml pelo Defender (falso positivo);
+#    o Inno Setup não tem esse problema.
+$iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+          "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) { throw "Inno Setup 6 não encontrado. Instale com: winget install JRSoftware.InnoSetup" }
 New-Item -ItemType Directory -Force "$proj\out" | Out-Null
-Copy-Item "$work\idist\Instalar PS2 Online.exe" "$proj\out\" -Force
-Write-Host "Pronto: $proj\out\Instalar PS2 Online.exe"
+& $iscc /Q "/DAppDir=$work\dist\PS2 Online" "/DOutDir=$proj\out" "$proj\installer\PS2Online.iss"
+if ($LASTEXITCODE -ne 0) { throw "ISCC falhou ($LASTEXITCODE)" }
+Write-Host "Pronto: $proj\out\Instalar-PS2-Online.exe"
