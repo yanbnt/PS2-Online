@@ -45,7 +45,7 @@ def check(nome, cond):
     ok &= bool(cond)
     print(("OK   " if cond else "FALHA") + " " + nome)
 
-check("som do jogo sem eco (captura por processo)", any("sem o som do PS2 Online" in l for l in logs))
+check("som do jogo sem eco (só o PCSX2)", any("só o som do PCSX2" in l for l in logs))
 falar(g1.mic)
 check("host ouve o Primo", host_mix.speaking(1))
 check("Carlos ouve o Primo", g2.voice and g2.voice.speaking(1))

@@ -32,7 +32,7 @@ from widgets import (ACCENT, BAD, MUTED, OK, WARN, AnimButton, Card, FadeStack, 
                      PulseDot, Sidebar, Spinner, StatusIcon, Toast, field)
 
 APP_NAME = "PS2 Online"
-APP_VERSION = "1.3"
+APP_VERSION = "1.3.1"
 APPROVAL_TIMEOUT = 90
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
@@ -1783,8 +1783,8 @@ com o som do jogo.</li>
 <h2>Dicas</h2>
 <ul>
 <li>Travando? Em <b>Avançado</b>, baixe a qualidade ou a taxa de vídeo, ou use o codificador da sua placa de vídeo.</li>
-<li>O som do jogo enviado aos amigos é o som do PC do host, <b>menos o próprio PS2 Online</b> (a voz da chamada
-não volta como eco). Outros programas tocando (Spotify, Discord) vão junto.</li>
+<li>O som enviado aos amigos é <b>só o som do PCSX2</b>: a voz da chamada, Spotify, Discord e as
+notificações do seu PC não vão junto.</li>
 <li>A aba <b>Controles</b> mostra ao vivo se o controle de cada amigo está chegando.</li>
 <li>Ping abaixo de ~60 ms é ótimo; acima de 120 ms jogos de luta ficam difíceis.</li>
 </ul>

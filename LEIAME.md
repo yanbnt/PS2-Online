@@ -37,7 +37,7 @@ Ao abrir a sala, o app liga você ao seu controle (Jogador 1) e cada amigo ao co
 - Liga sozinha na sala: todos falam com todos, junto com o som do jogo.
 - **F9** muta/desmuta (funciona com o jogo em foco). Também há o botão 🎤 na barra lateral.
 - Em **Avançado → Chamada de voz**: microfone, sensibilidade, volume das vozes e **apertar para falar**.
-- O som do jogo que vai para os amigos não inclui o som do PS2 Online, então a voz não volta como eco.
+- O som que vai para os amigos é só o do PCSX2, então a voz da chamada não volta como eco.
 - Use **fone de ouvido**: sem fone, o microfone capta a caixa de som.
 
 Fechar o PS2 Online encerra tudo: a sala, a porta no roteador e a conexão dos amigos, que recebem o aviso "O host fechou a sala".
@@ -79,7 +79,7 @@ Para jogar pelo teclado, veja o mapa de teclas na própria aba.
 
 ## Limitações
 
-- O som transmitido é o do PC do host, menos o próprio PS2 Online. Outros programas tocando (Spotify, Discord) vão junto.
+- O som transmitido é só o do PCSX2: a voz da chamada e outros programas (Spotify, Discord) não vão junto.
 - A janela do PCSX2 precisa ficar visível no host, porque a captura é da tela.
 - O convidado lê controles **XInput**. Controles de PlayStation precisam do DS4Windows ou do Steam Input.
 - A senha é enviada sem criptografia. Use uma senha que você não usa em outro lugar.

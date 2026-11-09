@@ -26,7 +26,7 @@ O guia completo está em **[LEIAME.md](LEIAME.md)** e na aba **Ajuda** do app. R
 ## Recursos
 
 - **Chamada de voz** entre todos da sala (Opus), com mutar (F9), apertar para falar e indicador de quem está falando
-- **Som do jogo sem eco:** o host transmite o som do PC **menos o próprio app** (captura WASAPI por processo)
+- **Som do jogo sem eco:** o host transmite **só o som do PCSX2** (captura WASAPI por processo)
 - **Controles ligados sozinhos:** o app descobre qual controle é do host e qual é de cada amigo e ajusta o PCSX2
 - **Código de convite** com IP, porta e senha, validado na hora, e detecção automática na área de transferência
 - **Aprovação** de cada jogador antes de ele entrar
@@ -57,7 +57,7 @@ python app.py
 | `invite.py` | Código de convite `PS2-…` |
 | `upnp.py` | UPnP: IP do roteador e abertura/fechamento de porta |
 | `voice.py` | Chamada de voz: microfone, Opus, mixagem, apertar para falar |
-| `procloop.py` | Captura do som do PC excluindo o próprio app (WASAPI process loopback, via comtypes) |
+| `procloop.py` | Captura do som de um processo (o PCSX2) via WASAPI process loopback (comtypes) |
 | `host.py` | Captura da janela, codificação de vídeo, áudio e controles virtuais |
 | `guest.py` | Decodificação, áudio, XInput e teclado |
 | `pcsx2.py` | `PCSX2.ini`, lista de jogos e localização da janela |
@@ -67,6 +67,7 @@ python app.py
 | `build.ps1` | Gera o app (PyInstaller, modo pasta) e o instalador (Inno Setup) |
 | `tests/e2e_test.py` | Teste ponta a ponta: host e convidado no mesmo PC (ex.: `libx264 1280x720`) |
 | `tests/voice_test.py` | Teste da chamada de voz: host + 2 convidados |
+| `tests/game_audio_test.py` | Teste do som do jogo com o "PCSX2" aberto pelo app (precisa de um script que toque um tom) |
 
 Para gerar o instalador, é preciso o [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`):
 

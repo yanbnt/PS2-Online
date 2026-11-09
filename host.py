@@ -129,7 +129,8 @@ class HostServer:
         self._reserved = set()           # vagas de quem está esperando aprovação
         self.virtual_slots = []
         self.on_voice = None             # callable(quem_fala, pacote_opus) — toca a voz no host
-        self._ploop = None
+        self._audio_on = False
+        self.audio_source = ""
         self.approve = cfg.get("approve")  # callable(nome, ip) -> bool, ou None
         self.upnp_status = ""
         self.wan_ip = None
@@ -255,9 +256,7 @@ class HostServer:
         for c in clients:
             self._drop(c)
         self._upnp_close()
-        if self._ploop:
-            self._ploop.stop()
-            self._ploop = None
+        self._audio_on = False
         if self._astream:
             try:
                 self._astream.stop_stream()
@@ -303,15 +302,13 @@ class HostServer:
     # ------------------------------------------------------------- áudio
     def _start_audio(self):
         if procloop.supported():
-            try:
-                self._ploop = procloop.ProcessLoopback(os.getpid(), exclude=True, callback=self._broadcast_audio)
-                self._ploop.start()
-                self.audio_fmt = {"rate": procloop.RATE, "channels": procloop.CHANNELS}
-                self.log("Capturando o som do PC sem o som do PS2 Online (a voz da chamada não volta como eco).")
-                return
-            except Exception as e:
-                self._ploop = None
-                self.log(f"Captura de áudio sem eco indisponível ({e}); usando a captura comum.")
+            # Captura SÓ o som do PCSX2 (e de quem ele abrir). Não dá para usar "tudo menos o PS2 Online":
+            # quando o PCSX2 é aberto pelo app ele vira processo-filho e o som do jogo seria excluído junto.
+            self.audio_fmt = {"rate": procloop.RATE, "channels": procloop.CHANNELS}
+            self._audio_on = True
+            threading.Thread(target=self._game_audio_loop, daemon=True).start()
+            self.log("Áudio: transmitindo só o som do PCSX2 (a voz da chamada não volta como eco).")
+            return
         import pyaudiowpatch as pyaudio
 
         self._pa = pyaudio.PyAudio()
@@ -341,6 +338,32 @@ class HostServer:
                                       stream_callback=cb)
         self._astream.start_stream()
         self.log(f"Capturando áudio de: {dev['name']} ({rate} Hz)")
+
+    def _game_audio_loop(self):
+        """Segue o processo do PCSX2: começa a capturar quando ele abre, recomeça se ele for reaberto."""
+        cur_pid, cap = None, None
+        while self._audio_on:
+            pids = sorted(pcsx2.find_pids())
+            pid = pids[0] if pids else None
+            if pid != cur_pid:
+                if cap:
+                    cap.stop()
+                    cap = None
+                cur_pid = pid
+                if pid:
+                    try:
+                        cap = procloop.ProcessLoopback(pid, exclude=False, callback=self._broadcast_audio)
+                        cap.start()
+                        self.audio_source = f"PCSX2 (processo {pid})"
+                        self.log(f"Áudio: capturando o som do PCSX2 (processo {pid}).")
+                    except Exception as e:
+                        cap = None
+                        self.log(f"Áudio: não consegui capturar o som do PCSX2 ({e}).")
+                else:
+                    self.audio_source = "aguardando o PCSX2 abrir"
+            time.sleep(1.0)
+        if cap:
+            cap.stop()
 
     def _broadcast_audio(self, data):
         with self.clients_lock:
