@@ -4,7 +4,7 @@ import socket
 import struct
 import threading
 
-VERSION = 1
+VERSION = 2
 DEFAULT_PORT = 27900
 MAX_MSG = 8 * 1024 * 1024
 
@@ -20,6 +20,7 @@ PONG = 8       # host -> convidado  (eco)
 RUMBLE = 9     # host -> convidado  (motor grande, motor pequeno)
 KEYREQ = 10    # convidado -> host  (pede keyframe)
 BYE = 11
+PENDING = 12   # host -> convidado  (aguardando o host aprovar a entrada)
 
 CODEC_H264 = 1
 CODEC_JPEG = 2

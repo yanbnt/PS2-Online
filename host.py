@@ -14,8 +14,11 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QImage
 
 import pcsx2
-from protocol import (AUDIO, BYE, CODEC_H264, CODEC_JPEG, HELLO, INPUT, KEYREQ, PAD, PING, PING_S, PONG,
-                      REJECT, RUMBLE, RUMBLE_S, VERSION, VIDEO, VIDEO_HDR, WELCOME, Conn)
+import upnp
+from protocol import (AUDIO, BYE, CODEC_H264, CODEC_JPEG, HELLO, INPUT, KEYREQ, PAD, PENDING, PING, PING_S,
+                      PONG, REJECT, RUMBLE, RUMBLE_S, VERSION, VIDEO, VIDEO_HDR, WELCOME, Conn)
+
+APPROVAL_TIMEOUT = 90  # segundos para o host aceitar/recusar
 
 MAX_FAILS = 5          # tentativas erradas antes de bloquear o IP
 BAN_SECONDS = 600
@@ -120,11 +123,54 @@ class HostServer:
         self._fails = {}
         self._fail_lock = threading.Lock()
         self._pending = 0
+        self._reserved = set()           # vagas de quem está esperando aprovação
+        self.virtual_slots = []
+        self.approve = cfg.get("approve")  # callable(nome, ip) -> bool, ou None
+        self.upnp_status = ""
+        self.wan_ip = None
+        self._upnp_gw = None
+        self._upnp_mapped = False
+
+    # ------------------------------------------------------------- UPnP
+    def _upnp_open(self):
+        port = self.cfg["port"]
+        try:
+            gw = upnp.discover()
+            self._upnp_gw = gw
+            try:
+                self.wan_ip = gw.external_ip()
+            except Exception:
+                pass
+            existing = gw.get_port(port)
+            if existing and existing[0] != gw.local_ip:
+                self.upnp_status = f"porta {port} já aponta para outro PC ({existing[0]})"
+                self.log(f"UPnP: a porta {port} do roteador já está ligada a {existing[0]}. Escolha outra porta.")
+                return
+            if not existing:
+                gw.add_port(port)
+                self._upnp_mapped = True
+            self.upnp_status = f"porta {port} aberta no roteador"
+            wan = f" (IP do roteador: {self.wan_ip} — {upnp.describe_wan(self.wan_ip)})" if self.wan_ip else ""
+            self.log(f"UPnP: porta {port} aberta no roteador automaticamente{wan}.")
+        except Exception as e:
+            self.upnp_status = "UPnP indisponível"
+            self.log(f"UPnP indisponível ({e}). Se precisar, abra a porta {port} manualmente no roteador.")
+
+    def _upnp_close(self):
+        if self._upnp_gw and self._upnp_mapped:
+            try:
+                self._upnp_gw.delete_port(self.cfg["port"])
+                self.log(f"UPnP: porta {self.cfg['port']} fechada no roteador.")
+            except Exception as e:
+                self.log(f"UPnP: não consegui fechar a porta ({e}).")
+        self._upnp_mapped = False
 
     # ------------------------------------------------------------- ciclo de vida
     def start(self):
         import vgamepad as vg
+        import xinput
 
+        before = set(xinput.connected())
         self.pads = []
         for i in range(len(self.slots)):
             pad = vg.VX360Gamepad()
@@ -137,6 +183,12 @@ class HostServer:
             pad.register_notification(callback_function=on_rumble)
             self._notif_refs.append(on_rumble)
             self.pads.append(pad)
+        for _ in range(10):   # espera o Windows registrar os controles virtuais
+            time.sleep(0.05)
+            new = sorted(set(xinput.connected()) - before)
+            if len(new) >= len(self.pads):
+                break
+        self.virtual_slots = new   # índices XInput dos controles virtuais (na ordem de criação)
         self.log(f"{len(self.pads)} controle(s) virtual(is) criado(s).")
 
         if self.cfg.get("audio"):
@@ -154,6 +206,8 @@ class HostServer:
         threading.Thread(target=self._accept_loop, daemon=True).start()
         threading.Thread(target=self._capture_loop, daemon=True).start()
         self.log(f"Servidor aberto na porta TCP {self.cfg['port']}.")
+        if self.cfg.get("upnp"):
+            threading.Thread(target=self._upnp_open, daemon=True).start()
 
     def stop(self):
         self.running = False
@@ -164,7 +218,19 @@ class HostServer:
         with self.clients_lock:
             clients = list(self.clients.values())
         for c in clients:
+            c.alive = False                     # para o envio de vídeo/áudio
+            with c.cond:
+                c.cond.notify_all()
+            try:
+                c.conn.send(BYE, "O host fechou a sala.".encode())
+                c.conn.sock.shutdown(socket.SHUT_WR)   # fecha com calma: o aviso chega antes do fim
+            except Exception:
+                pass
+        if clients:
+            time.sleep(0.4)
+        for c in clients:
             self._drop(c)
+        self._upnp_close()
         if self._astream:
             try:
                 self._astream.stop_stream()
@@ -191,6 +257,13 @@ class HostServer:
         if c:
             self.log(f"{c.name} foi removido da sala.")
             self._drop(c)
+
+    def pad_state(self, slot_idx):
+        """Último estado enviado pelo convidado ao controle virtual (buttons, lt, rt, lx, ly, rx, ry)."""
+        if slot_idx >= len(self.pads):
+            return None
+        r = self.pads[slot_idx].report
+        return (r.wButtons, r.bLeftTrigger, r.bRightTrigger, r.sThumbLX, r.sThumbLY, r.sThumbRX, r.sThumbRY)
 
     def snapshot(self):
         with self.clients_lock:
@@ -291,12 +364,28 @@ class HostServer:
                 return
             name = str(hello.get("name") or "Convidado")[:24]
             with self.clients_lock:
-                free = [i for i in range(len(self.slots)) if i not in self.clients]
+                free = [i for i in range(len(self.slots)) if i not in self.clients and i not in self._reserved]
                 if not free:
                     conn.send(REJECT, "A sala está cheia.".encode())
                     return
-                client = Client(conn, addr, name, free[0])
-                self.clients[client.slot_idx] = client
+                slot = free[0]
+                self._reserved.add(slot)
+            try:
+                if self.approve:
+                    conn.send(PENDING)
+                    self.log(f"{name} ({addr[0]}) quer entrar como Jogador {slot + 2}. Aguardando sua aprovação…")
+                    if not self.approve(name, addr[0], slot + 2):
+                        conn.send(REJECT, "O host recusou a sua entrada.".encode())
+                        self.log(f"Entrada de {name} recusada.")
+                        return
+                    if not self.running:
+                        return
+            finally:
+                with self.clients_lock:
+                    self._reserved.discard(slot)
+            with self.clients_lock:
+                client = Client(conn, addr, name, slot)
+                self.clients[slot] = client
             sock.settimeout(None)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
             slot_name = self.slots[client.slot_idx]

@@ -19,20 +19,24 @@ O instalador já traz tudo: o app, os atalhos e o driver de controle virtual. N�
 
 O guia completo está em **[LEIAME.md](LEIAME.md)** e na aba **Ajuda** do app. Resumo:
 
-- **Host:** feche o PCSX2 e clique em **Configurar portas no PCSX2**. Depois clique em **Abrir sala**, abra o jogo e passe o IP para os amigos.
-- **Convidado:** na aba **Entrar**, preencha IP, porta e senha e clique em **Conectar**.
-- **Conexão pela internet:** use **Radmin VPN**, **Tailscale** ou **ZeroTier**, que funcionam até com CGNAT, ou abra a porta TCP 27900 no roteador.
+- **Host:** em **Hospedar**, escolha o jogo, clique em **Abrir sala** e depois em **Copiar convite**. Mande o código `PS2-…` para os amigos e aprove quem pedir para entrar.
+- **Convidado:** copie o convite e abra o PS2 Online. Ele detecta o código e pergunta se você quer entrar. Também dá para colar o código na aba **Entrar**.
+- **Conexão pela internet:** o app abre a porta no roteador sozinho (UPnP). Com **CGNAT**, isso só funciona entre clientes da mesma operadora; para os outros casos, usem **Radmin VPN** ou **Tailscale**, e o convite passa a usar o IP da VPN.
 
 ## Recursos
 
+- **Código de convite** com IP, porta e senha, validado na hora, e detecção automática na área de transferência
+- **Aprovação** de cada jogador antes de ele entrar
+- **UPnP:** abre a porta no roteador ao abrir a sala e fecha ao sair
+- Tela **Controles** que mostra ao vivo os controles físicos e virtuais, com botões e analógicos animados
 - Vídeo **H.264** com baixa latência (x264, NVENC, QuickSync ou AMF) ou JPEG
 - Áudio do PC do host (loopback WASAPI)
-- Até **4 jogadores**, com multitap
-- Vibração do controle repassada ao convidado
+- Até **4 jogadores**, com multitap, e vibração repassada ao convidado
 - Controle **XInput** ou **teclado** no convidado
+- Checagem do que falta (PCSX2, controles, driver, rede), com botões de correção
 - Configuração automática das portas no `PCSX2.ini`, com backup
 - Senha na sala e bloqueio de IP após tentativas erradas
-- Ícone na bandeja do sistema
+- Interface com animações e ícone na bandeja do sistema. Fechar o app encerra tudo: a sala, a porta do roteador e a conexão.
 
 ## Desenvolvimento
 
@@ -45,7 +49,10 @@ python app.py
 
 | Arquivo | Função |
 |---|---|
-| `app.py` | Interface (PySide6) e bandeja do sistema |
+| `app.py` | Interface (PySide6): páginas, bandeja do sistema |
+| `widgets.py` | Componentes animados: botões, cartões, toast, spinner, desenho do controle |
+| `invite.py` | Código de convite `PS2-…` |
+| `upnp.py` | UPnP: IP do roteador e abertura/fechamento de porta |
 | `host.py` | Captura da janela, codificação de vídeo, áudio e controles virtuais |
 | `guest.py` | Decodificação, áudio, XInput e teclado |
 | `pcsx2.py` | `PCSX2.ini`, lista de jogos e localização da janela |

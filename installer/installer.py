@@ -12,7 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP = "PS2 Online"
-VERSION = "1.0"
+VERSION = "1.2"
 EXE = "PS2 Online.exe"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\PS2Online"
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))

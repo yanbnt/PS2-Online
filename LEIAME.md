@@ -16,20 +16,25 @@ O host roda o PCSX2 e joga como Jogador 1. Os convidados recebem a imagem e o so
 
 ## Instalação
 
-1. Instale o **Python 3.11 ou mais novo** (python.org) e marque "Add python.exe to PATH".
-2. Dê dois cliques em **`Iniciar PS2 Online.bat`**. Na primeira vez ele instala as dependências (alguns minutos).
-3. **Só quem hospeda:** instale o driver **ViGEmBus** (https://github.com/nefarius/ViGEmBus/releases).
+Rode o **`Instalar PS2 Online.exe`**. Ele instala o app, os atalhos e o driver ViGEmBus, que só é necessário para hospedar.
+
+Para rodar a partir do código-fonte: instale o Python 3.11 ou mais novo e dê dois cliques em **`Iniciar PS2 Online.bat`**.
 
 ## Host
 
-1. Feche o PCSX2. Na aba **Hospedar**, escolha o modo (2 jogadores, ou multitap para 4) e o **Nº SDL do 1º convidado**, que é a quantidade de controles físicos que você tem ligados. Depois clique em **Configurar portas no PCSX2**. Isso grava os Pads dos convidados no `PCSX2.ini` e faz um backup em `PCSX2.ini.bak-ps2online`.
-2. Clique em **Abrir sala**. Na primeira vez, permita o acesso no aviso do firewall do Windows.
-3. Clique em **Abrir jogo no PCSX2** e deixe a janela visível, sem minimizar.
-4. Mande para os amigos o IP e a porta que aparecem na tela.
+1. Abra a tela **Início** e confira se está tudo ✓. Se faltar algo, os botões ao lado de cada item corrigem: configurar as portas no PCSX2, instalar o driver etc.
+2. Em **Hospedar**, escolha o jogo, defina uma senha (opcional) e clique em **Abrir sala**. Na primeira vez, permita o acesso no aviso do firewall do Windows. A porta é aberta no roteador automaticamente (UPnP).
+3. Clique em **Copiar convite** e mande o código `PS2-…` para os amigos.
+4. Quando alguém tentar entrar, aparece **"Fulano quer entrar — Aceitar / Recusar"**.
+5. Clique em **Abrir jogo no PCSX2** e deixe a janela visível, sem minimizar.
+
+A tela **Controles** mostra ao vivo o seu controle e o de cada amigo, para conferir se os comandos estão chegando.
+
+Fechar o PS2 Online encerra tudo: a sala, a porta no roteador e a conexão dos amigos, que recebem o aviso "O host fechou a sala".
 
 ## Convidado
 
-Na aba **Entrar**, preencha o IP, a porta e a senha e clique em **Conectar**. Atalhos na janela do jogo:
+Copie o convite que o host mandou e abra o PS2 Online. Ele detecta o convite e pergunta se você quer entrar. Também dá para colar o código na tela **Entrar**. Atalhos na janela do jogo:
 
 - **F11:** tela cheia
 - **F1:** estatísticas (ping, fps, banda)
@@ -38,9 +43,10 @@ Para jogar pelo teclado, veja o mapa de teclas na própria aba.
 
 ## Conexão pela internet
 
-- **Recomendado:** todos entram na mesma rede do **Radmin VPN**, do **ZeroTier** ou do **Tailscale**, e o convidado usa o IP do host nessa rede. Funciona mesmo com **CGNAT** e não deixa nenhuma porta aberta para a internet.
-- **Alternativa:** o host abre a porta **TCP 27900** no roteador e passa o IP público (há um botão na interface que mostra esse IP). **Não funciona com CGNAT.** Para saber se você está atrás de CGNAT: se o IP WAN que aparece no roteador for diferente do IP público, ou começar com 100.64 a 100.127, é CGNAT.
-- Com a porta aberta: defina uma senha forte e feche a sala quando não estiver jogando. Depois de 5 senhas erradas, o IP fica bloqueado por 10 minutos.
+- **Automático (UPnP):** ao abrir a sala, o app abre a porta no roteador e coloca o IP dele no convite. Ao fechar o app, a porta é fechada.
+- **CGNAT:** se o IP do roteador começar com 100.64 a 100.127, o convite só funciona para amigos da **mesma operadora**. O app avisa quando isso acontece.
+- **Para qualquer amigo:** todos entram na mesma rede do **Radmin VPN** ou do **Tailscale**, que funcionam mesmo com CGNAT. O convite passa a usar o IP da VPN automaticamente.
+- **Segurança:** o convite leva a senha, então mande só para quem vai jogar. A aprovação de cada jogador e o bloqueio de IP após 5 senhas erradas (por 10 minutos) protegem mesmo que o convite vaze.
 
 ## Banda (upload do host, por convidado)
 

@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QImage
 
 import xinput as xi
-from protocol import (AUDIO, BYE, CODEC_H264, HELLO, INPUT, KEYREQ, PAD, PING, PING_S, PONG, REJECT,
+from protocol import (AUDIO, BYE, CODEC_H264, HELLO, INPUT, KEYREQ, PAD, PENDING, PING, PING_S, PONG, REJECT,
                       RUMBLE, RUMBLE_S, VERSION, VIDEO, VIDEO_HDR, WELCOME, Conn)
 
 K = Qt.Key
@@ -101,6 +101,7 @@ class AudioPlayer:
 class GuestClient(QObject):
     frame = Signal(QImage)
     welcome = Signal(dict)
+    waiting = Signal()
     failed = Signal(str)
     disconnected = Signal(str)
     stats = Signal(dict)
@@ -153,6 +154,10 @@ class GuestClient(QObject):
             self.conn = Conn(sock)
             self.conn.send_json(HELLO, {"version": VERSION, "name": self.name, "password": self.password})
             mtype, payload = self.conn.recv()
+            if mtype == PENDING:
+                self.waiting.emit()
+                sock.settimeout(120)
+                mtype, payload = self.conn.recv()
             if mtype == REJECT:
                 self.running = False
                 self.failed.emit(payload.decode("utf-8", "replace"))
@@ -171,7 +176,9 @@ class GuestClient(QObject):
                     info["audio_error"] = str(e)
             self.welcome.emit(info)
             threading.Thread(target=self._input_loop, daemon=True).start()
-            self._recv_loop()
+            bye = self._recv_loop()
+            if bye:
+                reason = bye
         except socket.timeout:
             reason = "Tempo esgotado: o host não respondeu. Confira IP, porta e firewall."
             if not self.conn or not self.running:
@@ -231,7 +238,7 @@ class GuestClient(QObject):
                 if self._active_pad is not None:
                     xi.set_vibration(self._active_pad, large, small)
             elif mtype == BYE:
-                break
+                return payload.decode("utf-8", "replace") or "O host fechou a sala."
             now = time.perf_counter()
             if now - stat_t >= 1.0:
                 dt = now - stat_t

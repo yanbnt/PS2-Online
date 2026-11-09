@@ -3,27 +3,37 @@
 O host roda o PCSX2 normalmente; os convidados recebem a imagem e o som e
 controlam os Jogadores 2, 3 e 4 por controles virtuais.
 """
+import getpass
+import html
 import ipaddress
+import os
 import socket
+import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRect, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPalette
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGridLayout,
-                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
-                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QSpinBox, QStyle,
-                               QSystemTrayIcon, QTableWidget,
-                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget, QAbstractItemView)
+from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QRect, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QImage, QIntValidator, QPainter, QPalette
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGraphicsOpacityEffect,
+                               QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                               QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
+                               QSystemTrayIcon, QToolButton, QVBoxLayout, QWidget)
 
+import invite
 import pcsx2
+import upnp
 import xinput
 from protocol import DEFAULT_PORT
+from widgets import (ACCENT, BAD, MUTED, OK, WARN, AnimButton, Card, FadeStack, GamepadView, PasswordEdit,
+                     PulseDot, Sidebar, Spinner, StatusIcon, Toast, field)
 
 APP_NAME = "PS2 Online"
+APP_VERSION = "1.2"
+APPROVAL_TIMEOUT = 90
+BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 QUALITY_PRESETS = [
     ("Leve — 480p, 30 fps (internet fraca)", 480, 30, 2500),
@@ -33,49 +43,93 @@ QUALITY_PRESETS = [
 ]
 
 STYLE = """
-QWidget { background: #14161c; color: #e6e8ee; font-size: 10pt; }
-QMainWindow, QTabWidget::pane { background: #14161c; }
-QLabel, QCheckBox { background: transparent; }
-QCheckBox { spacing: 8px; }
-QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #4a5163; border-radius: 4px; background: #0f1116; }
+* { font-family: 'Segoe UI'; }
+QWidget { background: transparent; color: #e6e8ee; font-size: 10pt; }
+QMainWindow, #root { background: #0f1116; }
+#content { background: #12141b; }
+#sidebar { background: #0b0d12; border-right: 1px solid #1f232d; }
+#navind { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #4c6ef5, stop:1 #7950f2); border-radius: 2px; }
+QPushButton#nav { text-align: left; padding: 11px 14px; border: none; border-radius: 10px; color: #9aa1b2;
+                  font-size: 10.5pt; font-weight: 600; background: transparent; }
+QPushButton#nav:hover { background: #171a23; color: #e6e8ee; }
+QPushButton#nav:checked { background: #1a1f2e; color: #ffffff; }
+#card { background: #181b24; border: 1px solid #242936; border-radius: 14px; }
+QLabel#cardtitle { font-size: 12pt; font-weight: 700; color: #ffffff; }
+QLabel#step { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #4c6ef5, stop:1 #7950f2); color: white;
+              border-radius: 13px; font-weight: 800; }
+QLabel#pagetitle { font-size: 20pt; font-weight: 800; color: #ffffff; }
+QLabel#pagesub { color: #8c93a6; font-size: 10.5pt; }
+QLabel#flabel { color: #9aa1b2; font-size: 9pt; font-weight: 600; letter-spacing: 0.3px; }
+QLabel#hint { color: #8c93a6; font-size: 9pt; }
+QLabel#big { font-size: 13pt; font-weight: 700; }
+QLabel#code { font-family: Consolas; font-size: 13pt; color: #d0ffd6; background: #0d1015;
+              border: 1px dashed #2f3a52; border-radius: 10px; padding: 12px; }
+QLabel#toast { background: #1d2130; color: #ffffff; border-radius: 10px; padding: 10px 18px; font-weight: 600;
+               border: 1px solid #2f3546; }
+QLabel#pill { background: #171a23; border: 1px solid #242936; border-radius: 12px; padding: 6px 10px; color: #c5cad6; }
+QLineEdit, QComboBox, QSpinBox {
+    background: #0f1218; border: 1.5px solid #262b38; border-radius: 10px; padding: 8px 12px; min-height: 22px;
+    selection-background-color: #3b5bdb; }
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: #3a4152; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #4c6ef5; background: #111624; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #5d6375; background: #13151b; }
+QLineEdit#invite { font-family: Consolas; font-size: 12.5pt; padding: 12px 14px; }
+QComboBox::drop-down { border: none; width: 26px; }
+QComboBox QAbstractItemView { background: #141720; border: 1px solid #2f3442; border-radius: 8px; padding: 4px;
+                              selection-background-color: #3b5bdb; outline: none; }
+QSpinBox::up-button, QSpinBox::down-button { width: 0; border: none; }
+QPlainTextEdit { background: #0d1015; border: 1px solid #222632; border-radius: 10px; padding: 6px;
+                 font-family: Consolas; font-size: 9pt; color: #b7bdcc; }
+QCheckBox { spacing: 9px; }
+QCheckBox::indicator { width: 18px; height: 18px; border: 1.5px solid #4a5163; border-radius: 5px; background: #0f1218; }
 QCheckBox::indicator:hover { border-color: #4c6ef5; }
 QCheckBox::indicator:checked { background: #4c6ef5; border-color: #4c6ef5; }
-QSpinBox::up-button, QSpinBox::down-button { width: 0; border: none; }
-QMenu { background: #1c1f27; border: 1px solid #2f3442; padding: 4px; }
-QMenu::item { padding: 6px 22px; border-radius: 4px; }
+QCheckBox::indicator:checked:disabled { background: #2f3a5c; border-color: #2f3a5c; }
+QCheckBox:disabled { color: #6b7285; }
+QToolButton#expander { border: none; color: #9aa1b2; font-weight: 600; padding: 4px 0; }
+QToolButton#expander:hover { color: #ffffff; }
+QPushButton#mini { background: #232734; border: 1px solid #2f3546; border-radius: 8px; padding: 5px 10px; }
+QPushButton#mini:hover { background: #2e3445; }
+QMenu { background: #1c1f27; border: 1px solid #2f3442; padding: 4px; border-radius: 8px; }
+QMenu::item { padding: 7px 22px; border-radius: 6px; }
 QMenu::item:selected { background: #3b5bdb; }
 QMenu::item:disabled { color: #8c93a6; }
 QMenu::separator { height: 1px; background: #2f3442; margin: 4px 8px; }
-QTabWidget::pane { border: 1px solid #2a2e39; border-radius: 8px; top: -1px; }
-QTabBar::tab { background: #1c1f27; color: #9aa1b2; padding: 9px 22px; border: 1px solid #2a2e39;
-               border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 3px; }
-QTabBar::tab:selected { background: #232734; color: #ffffff; }
-QGroupBox { border: 1px solid #2a2e39; border-radius: 8px; margin-top: 14px; padding: 10px 10px 8px 10px;
-            background: #191c23; font-weight: 600; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #7fa7ff; }
-QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTableWidget {
-    background: #0f1116; border: 1px solid #2f3442; border-radius: 6px; padding: 5px 7px;
-    selection-background-color: #3b5bdb; }
-QComboBox QAbstractItemView { background: #0f1116; border: 1px solid #2f3442; }
-QPushButton { background: #262b38; border: 1px solid #343a4a; border-radius: 6px; padding: 7px 14px; }
-QPushButton:hover { background: #2f3546; }
-QPushButton:disabled { color: #5d6375; background: #1d2029; }
-QPushButton#primary { background: #3b5bdb; border-color: #4c6ef5; color: white; font-weight: 600; }
-QPushButton#primary:hover { background: #4c6ef5; }
-QPushButton#danger { background: #c92a2a; border-color: #e03131; color: white; font-weight: 600; }
-QHeaderView::section { background: #1c1f27; color: #9aa1b2; border: none; padding: 6px; }
-QLabel#hint { color: #8c93a6; font-weight: normal; }
-QLabel#big { font-size: 15pt; font-weight: 700; }
-QSlider::groove:horizontal { height: 6px; background: #2f3442; border-radius: 3px; }
-QSlider::handle:horizontal { width: 16px; margin: -6px 0; border-radius: 8px; background: #4c6ef5; }
+QSlider::groove:horizontal { height: 6px; background: #262b38; border-radius: 3px; }
+QSlider::sub-page:horizontal { background: #4c6ef5; border-radius: 3px; }
+QSlider::handle:horizontal { width: 18px; margin: -7px 0; border-radius: 9px; background: #ffffff; }
+QScrollArea { border: none; }
+QScrollBar:vertical { width: 10px; background: transparent; }
+QScrollBar::handle:vertical { background: #2a2f3d; border-radius: 5px; min-height: 30px; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+QToolTip { background: #1d2130; color: #e6e8ee; border: 1px solid #2f3546; padding: 6px; }
+QMessageBox { background: #181b24; }
+QMessageBox QPushButton { background: #262b38; border: 1px solid #343a4a; border-radius: 8px; padding: 7px 16px; min-width: 80px; }
+QMessageBox QPushButton:hover { background: #3b5bdb; }
 """
 
 
+# ============================================================================== utilitários
 def hint(text):
     lab = QLabel(text)
     lab.setObjectName("hint")
     lab.setWordWrap(True)
     return lab
+
+
+def page_header(title, sub):
+    w = QWidget()
+    v = QVBoxLayout(w)
+    v.setContentsMargins(0, 0, 0, 6)
+    v.setSpacing(2)
+    t = QLabel(title)
+    t.setObjectName("pagetitle")
+    s = QLabel(sub)
+    s.setObjectName("pagesub")
+    s.setWordWrap(True)
+    v.addWidget(t)
+    v.addWidget(s)
+    return w
 
 
 def describe_ip(ip: str) -> str:
@@ -89,9 +143,6 @@ def describe_ip(ip: str) -> str:
     if a.is_private:
         return "rede local / ZeroTier"
     return "internet"
-
-
-BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 
 def vigem_installed() -> bool:
@@ -123,219 +174,422 @@ def local_ips():
     return sorted(ip for ip in ips if not ip.startswith("127.") and not ip.startswith("169.254."))
 
 
+class NumberEdit(QLineEdit):
+    """Campo numérico com o mesmo visual dos outros campos (o QSpinBox estilizado some com o texto)."""
+    valueChanged = Signal(int)
+
+    def __init__(self, lo, hi, value):
+        super().__init__(str(value))
+        self.lo, self.hi = lo, hi
+        self.setValidator(QIntValidator(lo, hi, self))
+        self.textChanged.connect(self._changed)
+        self.editingFinished.connect(lambda: self.setText(str(self.value())))
+
+    def value(self) -> int:
+        try:
+            return max(self.lo, min(self.hi, int(self.text())))
+        except ValueError:
+            return self.lo
+
+    def setValue(self, v):
+        self.setText(str(max(self.lo, min(self.hi, int(v)))))
+
+    def _changed(self, text):
+        if text.isdigit() and self.lo <= int(text) <= self.hi:
+            self.valueChanged.emit(int(text))
+
+
+def spin(lo, hi, value, step=1, suffix=""):
+    return NumberEdit(lo, hi, value)
+
+
+def scrollable(widget):
+    sa = QScrollArea()
+    sa.setWidgetResizable(True)
+    sa.setFrameShape(QFrame.NoFrame)
+    sa.setWidget(widget)
+    return sa
+
+
 class Bridge(QObject):
     log = Signal(str)
-    text = Signal(str)
+    wan = Signal(str)
+    approve = Signal(object)
 
 
-# =====================================================================  HOST
-class HostTab(QWidget):
-    def __init__(self, settings: QSettings):
+# ============================================================================== AVANÇADO
+class AdvancedPage(QWidget):
+    def __init__(self, main, settings):
         super().__init__()
+        self.main = main
         self.s = settings
-        self.server = None
-        self.bridge = Bridge()
-        self.bridge.log.connect(self._append_log)
-        self.bridge.text.connect(lambda t: self.public_lbl.setText(t))
+        self.logf = lambda m: None
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(16)
+        root.addWidget(page_header("Avançado", "Ajustes técnicos. O padrão já funciona para a maioria dos casos."))
 
-        root = QHBoxLayout(self)
-        left = QVBoxLayout()
-        right = QVBoxLayout()
-        root.addLayout(left, 5)
-        root.addLayout(right, 4)
-
-        # --- 1. jogo
-        g1 = QGroupBox("1 · Jogo")
-        f1 = QGridLayout(g1)
+        # PCSX2 e controles
+        c1 = Card("PCSX2 e controles dos convidados")
         self.exe = QLineEdit(self.s.value("host/exe", pcsx2.DEFAULT_EXE))
-        b_exe = QPushButton("…")
-        b_exe.setFixedWidth(36)
+        b_exe = QPushButton("Procurar…")
+        b_exe.setObjectName("mini")
         b_exe.clicked.connect(self._browse_exe)
-        self.games = QComboBox()
-        self.games.setMinimumContentsLength(30)
-        b_game = QPushButton("Procurar ISO…")
-        b_game.clicked.connect(self._browse_game)
-        b_ref = QPushButton()
-        b_ref.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        b_ref.setFixedWidth(36)
-        b_ref.setToolTip("Recarregar a lista de jogos do PCSX2")
-        b_ref.clicked.connect(self._refresh_games)
-        self.fullscreen = QCheckBox("Abrir em tela cheia")
-        self.btn_launch = QPushButton("▶  Abrir jogo no PCSX2")
-        self.btn_launch.clicked.connect(self._launch)
-        f1.addWidget(QLabel("PCSX2:"), 0, 0)
-        f1.addWidget(self.exe, 0, 1, 1, 2)
-        f1.addWidget(b_exe, 0, 3)
-        f1.addWidget(QLabel("Jogo:"), 1, 0)
-        f1.addWidget(self.games, 1, 1)
-        f1.addWidget(b_game, 1, 2)
-        f1.addWidget(b_ref, 1, 3)
-        f1.addWidget(self.fullscreen, 2, 1)
-        f1.addWidget(self.btn_launch, 2, 2, 1, 2)
-        left.addWidget(g1)
-
-        # --- 2. controles
-        g2 = QGroupBox("2 · Controles dos convidados")
-        f2 = QFormLayout(g2)
+        row = QHBoxLayout()
+        row.addWidget(self.exe, 1)
+        row.addWidget(b_exe)
+        w = QWidget()
+        w.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        c1.body.addWidget(field("Executável do PCSX2", w))
         self.mode = QComboBox()
         for key, m in pcsx2.MULTITAP_MODES.items():
             self.mode.addItem(m["label"], key)
         self.mode.setCurrentIndex(max(0, self.mode.findData(self.s.value("host/mode", "off"))))
-        self.sdl_base = QSpinBox()
-        self.sdl_base.setRange(0, 7)
-        self.sdl_base.setValue(int(self.s.value("host/sdl_base", 1)))
-        b_detect = QPushButton("Detectar")
-        b_detect.clicked.connect(self._detect_pads)
-        row = QHBoxLayout()
-        row.addWidget(self.sdl_base)
-        row.addWidget(b_detect)
-        row.addStretch()
-        self.btn_cfg = QPushButton("⚙  Configurar portas no PCSX2")
-        self.btn_cfg.clicked.connect(self._configure_pcsx2)
-        f2.addRow("Modo:", self.mode)
-        f2.addRow("Nº SDL do 1º convidado:", row)
-        f2.addRow(hint("= quantos controles físicos você (host) tem ligados. Com 1 controle seu, use 1. "
-                       "Só teclado, use 0."))
-        f2.addRow(self.btn_cfg)
+        self.sdl_base = spin(0, 7, int(self.s.value("host/sdl_base", 1)))
+        b_det = QPushButton("Detectar")
+        b_det.setObjectName("mini")
+        b_det.clicked.connect(self.detect_pads)
+        g = QGridLayout()
+        g.setHorizontalSpacing(14)
+        g.setAlignment(Qt.AlignTop)
+        g.addWidget(field("Jogadores", self.mode), 0, 0, Qt.AlignTop)
+        sdl_row = QHBoxLayout()
+        sdl_row.setContentsMargins(0, 0, 0, 0)
+        sdl_row.addWidget(self.sdl_base, 1)
+        sdl_row.addWidget(b_det)
+        sw = QWidget()
+        sw.setLayout(sdl_row)
+        g.addWidget(field("Nº SDL do 1º convidado", sw, "= quantos controles físicos você (host) tem ligados."),
+                    0, 1, Qt.AlignTop)
+        c1.body.addLayout(g)
+        st_row = QHBoxLayout()
+        self.pad_icon = StatusIcon()
         self.pad_status = QLabel()
         self.pad_status.setWordWrap(True)
-        f2.addRow(self.pad_status)
-        self.mode.currentIndexChanged.connect(lambda _: self._update_pad_status())
-        self.sdl_base.valueChanged.connect(lambda _: self._update_pad_status())
-        left.addWidget(g2)
+        self.btn_cfg = AnimButton("⚙  Configurar portas no PCSX2", "ghost", height=36)
+        self.btn_cfg.clicked.connect(lambda: self.configure_pcsx2())
+        st_row.addWidget(self.pad_icon)
+        st_row.addWidget(self.pad_status, 1)
+        st_row.addWidget(self.btn_cfg)
+        c1.body.addLayout(st_row)
+        root.addWidget(c1)
 
-        # --- 3. servidor
-        g3 = QGroupBox("3 · Sala")
-        f3 = QFormLayout(g3)
-        self.port = QSpinBox()
-        self.port.setRange(1024, 65535)
-        self.port.setValue(int(self.s.value("host/port", DEFAULT_PORT)))
-        self.password = QLineEdit(self.s.value("host/password", ""))
-        self.password.setPlaceholderText("opcional")
+        # Transmissão
+        c2 = Card("Transmissão")
+        from host import ENCODERS
         self.quality = QComboBox()
         for p in QUALITY_PRESETS:
             self.quality.addItem(p[0])
         self.quality.setCurrentIndex(int(self.s.value("host/quality", 1)))
-        self.quality.currentIndexChanged.connect(lambda i: self.bitrate.setValue(QUALITY_PRESETS[i][3]))
         self.codec = QComboBox()
-        from host import ENCODERS
         for key, (label, _) in ENCODERS.items():
             self.codec.addItem(label, key)
         self.codec.setCurrentIndex(max(0, self.codec.findData(self.s.value("host/codec", "libx264"))))
-        self.bitrate = QSpinBox()
-        self.bitrate.setRange(500, 50000)
-        self.bitrate.setSingleStep(500)
-        self.bitrate.setSuffix(" kbps")
-        self.bitrate.setValue(int(self.s.value("host/bitrate", QUALITY_PRESETS[self.quality.currentIndex()][3])))
-        self.audio = QCheckBox("Transmitir áudio do PC")
-        self.audio.setChecked(self.s.value("host/audio", "true") == "true")
+        self.bitrate = spin(500, 50000, int(self.s.value("host/bitrate", QUALITY_PRESETS[self.quality.currentIndex()][3])),
+                            500, " kbps")
+        self.quality.currentIndexChanged.connect(lambda i: self.bitrate.setValue(QUALITY_PRESETS[i][3]))
         self.area = QComboBox()
         self.area.addItems(["Só a imagem do jogo", "Janela inteira do PCSX2"])
-        f3.addRow("Porta TCP:", self.port)
-        f3.addRow("Senha:", self.password)
-        f3.addRow("Qualidade:", self.quality)
-        f3.addRow("Codificador:", self.codec)
-        f3.addRow("Taxa de vídeo:", self.bitrate)
-        f3.addRow("Captura:", self.area)
-        f3.addRow("", self.audio)
-        self.btn_start = QPushButton("Abrir sala")
-        self.btn_start.setObjectName("primary")
-        self.btn_start.setMinimumHeight(38)
-        self.btn_start.clicked.connect(self._toggle_server)
-        f3.addRow(self.btn_start)
-        left.addWidget(g3)
-        left.addStretch()
+        self.audio = QCheckBox("Transmitir o áudio do PC")
+        self.audio.setChecked(self.s.value("host/audio", "true") == "true")
+        g2 = QGridLayout()
+        g2.setHorizontalSpacing(14)
+        g2.setVerticalSpacing(12)
+        g2.addWidget(field("Qualidade", self.quality), 0, 0)
+        g2.addWidget(field("Codificador de vídeo", self.codec), 0, 1)
+        g2.addWidget(field("Taxa de vídeo (kbps)", self.bitrate), 1, 0)
+        g2.addWidget(field("Captura", self.area), 1, 1)
+        c2.body.addLayout(g2)
+        c2.body.addWidget(self.audio)
+        root.addWidget(c2)
 
-        # --- direita: endereço, jogadores, log
-        g4 = QGroupBox("Endereço para os amigos")
-        v4 = QVBoxLayout(g4)
-        self.ips_lbl = QLabel()
-        self.ips_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.ips_lbl.setWordWrap(True)
-        self.public_lbl = QLabel("")
-        self.public_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        b_pub = QPushButton("Descobrir meu IP público")
-        b_pub.clicked.connect(self._public_ip)
-        v4.addWidget(self.ips_lbl)
-        v4.addWidget(self.public_lbl)
-        v4.addWidget(b_pub)
-        v4.addWidget(hint("Mais fácil: todos entram na mesma rede do Radmin VPN, ZeroTier ou Tailscale e usam "
-                          "o IP dessa rede. Pelo IP público é preciso abrir a porta TCP no roteador."))
-        right.addWidget(g4)
+        # Rede
+        c3 = Card("Rede")
+        self.port = spin(1024, 65535, int(self.s.value("host/port", DEFAULT_PORT)))
+        self.upnp_cb = QCheckBox("Abrir a porta no roteador automaticamente (UPnP) e fechar ao sair")
+        self.upnp_cb.setChecked(self.s.value("host/upnp", "true") == "true")
+        c3.body.addWidget(field("Porta TCP", self.port))
+        c3.body.addWidget(self.upnp_cb)
+        root.addWidget(c3)
+        root.addStretch()
 
-        g5 = QGroupBox("Jogadores")
-        v5 = QVBoxLayout(g5)
-        self.status = QLabel("Sala fechada.")
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Jogador", "Nome", "IP", "Ping", "Envio"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setMinimumHeight(130)
-        b_kick = QPushButton("Remover selecionado")
-        b_kick.clicked.connect(self._kick)
-        v5.addWidget(self.status)
-        v5.addWidget(self.table)
-        v5.addWidget(b_kick, 0, Qt.AlignRight)
-        right.addWidget(g5)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scrollable(inner))
+        self.mode.currentIndexChanged.connect(lambda _: self.update_pad_status())
+        self.sdl_base.valueChanged.connect(lambda _: self.update_pad_status())
+        self.exe.editingFinished.connect(self.update_pad_status)
+        self.update_pad_status()
 
-        g6 = QGroupBox("Registro")
-        v6 = QVBoxLayout(g6)
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMaximumBlockCount(500)
-        v6.addWidget(self.log)
-        right.addWidget(g6, 1)
+    def save(self):
+        s = self.s
+        s.setValue("host/exe", self.exe.text())
+        s.setValue("host/mode", self.mode.currentData())
+        s.setValue("host/sdl_base", self.sdl_base.value())
+        s.setValue("host/quality", self.quality.currentIndex())
+        s.setValue("host/codec", self.codec.currentData())
+        s.setValue("host/bitrate", self.bitrate.value())
+        s.setValue("host/audio", "true" if self.audio.isChecked() else "false")
+        s.setValue("host/port", self.port.value())
+        s.setValue("host/upnp", "true" if self.upnp_cb.isChecked() else "false")
 
-        self._refresh_games()
-        self._update_ips()
-        self._update_pad_status()
-        self._prev_bytes = {}
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._tick)
-        self.timer.start(1000)
-
-    # ------------------------------------------------------------- utilitários
-    def _append_log(self, msg):
-        self.log.appendPlainText(time.strftime("[%H:%M:%S] ") + msg)
-
-    def logf(self, msg):
-        self.bridge.log.emit(msg)
-
-    def _update_ips(self):
-        ips = local_ips()
-        if not ips:
-            self.ips_lbl.setText("Nenhum IP encontrado.")
-            return
-        port = self.port.value()
-        self.ips_lbl.setText("<br>".join(f"<b>{ip}</b>:{port} &nbsp;<span style='color:#8c93a6'>"
-                                         f"({describe_ip(ip)})</span>" for ip in ips))
-
-    def _public_ip(self):
-        self.public_lbl.setText("Consultando…")
-
-        def work():
-            try:
-                ip = urllib.request.urlopen("https://api.ipify.org", timeout=6).read().decode().strip()
-                self.bridge.text.emit(f"IP público: <b>{ip}</b>:{self.port.value()} (precisa abrir a porta no roteador)")
-            except Exception as e:
-                self.bridge.text.emit(f"Não consegui descobrir: {e}")
-
-        threading.Thread(target=work, daemon=True).start()
+    def locked_widgets(self):
+        return [self.port, self.mode, self.quality, self.codec, self.bitrate, self.audio, self.area, self.upnp_cb,
+                self.btn_cfg, self.sdl_base]
 
     def _browse_exe(self):
         path, _ = QFileDialog.getOpenFileName(self, "Localizar pcsx2-qt.exe", self.exe.text(), "PCSX2 (*.exe)")
         if path:
-            self.exe.setText(path)
-            self._refresh_games()
+            self.exe.setText(str(Path(path)))
+            self.save()
+            self.update_pad_status()
+            self.main.host.refresh_games()
 
-    def _refresh_games(self):
+    def detect_pads(self):
+        n = len(xinput.connected())
+        srv = self.main.host.server
+        if srv:
+            n = max(0, n - len(srv.pads))
+        self.sdl_base.setValue(n)
+        self.main.toast(f"{n} controle(s) físico(s) detectado(s).")
+
+    def pad_problems(self):
+        try:
+            return pcsx2.check_guest_pads(self.exe.text(), self.sdl_base.value(), self.mode.currentData())
+        except Exception as e:
+            return [f"não consegui ler a configuração do PCSX2 ({e})"]
+
+    def update_pad_status(self):
+        problems = self.pad_problems()
+        if problems:
+            self.pad_icon.set("warn")
+            self.pad_status.setText("Controles dos convidados <b>não configurados</b> no PCSX2.")
+            self.pad_status.setToolTip("\n".join(problems))
+        else:
+            self.pad_icon.set("ok")
+            self.pad_status.setText("PCSX2 pronto para os convidados.")
+            self.pad_status.setToolTip("")
+        return problems
+
+    def configure_pcsx2(self, quiet=False) -> bool:
+        if pcsx2.is_running():
+            QMessageBox.warning(self, APP_NAME, "Feche o PCSX2 antes. Ele regrava a configuração ao sair e "
+                                                "desfaria a alteração.")
+            return False
+        mode = self.mode.currentData()
+        n = len(pcsx2.MULTITAP_MODES[mode]["slots"])
+        try:
+            ini, backup, done = pcsx2.configure_guest_pads(self.exe.text(), self.sdl_base.value(), mode, n)
+        except Exception as e:
+            QMessageBox.critical(self, APP_NAME, str(e))
+            return False
+        self.save()
+        self.logf(f"PCSX2 configurado ({ini.name}); backup em {backup.name}.")
+        self.update_pad_status()
+        self.main.toast("PCSX2 configurado para os convidados ✓", "ok")
+        if not quiet:
+            lines = "\n".join(f"Jogador {i + 2} → porta {pcsx2.SLOT_NAMES[s]} → {d}" for i, (s, d) in enumerate(done))
+            QMessageBox.information(self, APP_NAME, f"Portas configuradas:\n\n{lines}\n\nBackup em:\n{backup}")
+        return True
+
+
+# ============================================================================== HOSPEDAR
+class PlayerRow(QFrame):
+    def __init__(self, slot_idx, name, kick_cb):
+        super().__init__()
+        self.setObjectName("card")
+        self.setStyleSheet("#card { background: #1d2130; border-radius: 12px; }")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        hue = (sum(map(ord, name)) * 47) % 360
+        av = QLabel((name[:1] or "?").upper())
+        av.setFixedSize(38, 38)
+        av.setAlignment(Qt.AlignCenter)
+        av.setStyleSheet(f"background: hsl({hue}, 60%, 45%); border-radius: 19px; font-weight: 800; font-size: 13pt;")
+        lay.addWidget(av)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        self.name = QLabel(f"<b>{html.escape(name)}</b>")
+        self.sub = QLabel(f"Jogador {slot_idx + 2}")
+        self.sub.setObjectName("hint")
+        col.addWidget(self.name)
+        col.addWidget(self.sub)
+        lay.addLayout(col, 1)
+        self.ping = QLabel("— ms")
+        self.ping.setStyleSheet("font-weight: 700;")
+        lay.addWidget(self.ping)
+        kick = QPushButton("Remover")
+        kick.setObjectName("mini")
+        kick.clicked.connect(lambda: kick_cb(slot_idx))
+        lay.addWidget(kick)
+
+    def update_stats(self, rtt, mbps, slot_label):
+        c = OK if rtt < 60 else WARN if rtt < 120 else BAD
+        self.ping.setText(f"<span style='color:{c}'>●</span> {rtt:.0f} ms")
+        self.sub.setText(f"{slot_label} · {mbps:.1f} Mbps")
+
+
+class HostPage(QWidget):
+    def __init__(self, main, adv, settings):
+        super().__init__()
+        self.main = main
+        self.adv = adv
+        self.s = settings
+        self.server = None
+        self.wan_ip = None
+        self.own_invites = set()
+        self.rows = {}
+        self._prev_bytes = {}
+        self.bridge = Bridge()
+        self.bridge.log.connect(self._append_log)
+        self.bridge.wan.connect(self._on_wan)
+        self.bridge.approve.connect(self._ask_approval)
+        adv.logf = self.logf
+
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(16)
+        outer.addWidget(page_header("Hospedar partida", "Três passos: escolha o jogo, abra a sala e mande o convite."))
+        cols = QHBoxLayout()
+        cols.setSpacing(16)
+        left = QVBoxLayout()
+        left.setSpacing(16)
+        right = QVBoxLayout()
+        right.setSpacing(16)
+        cols.addLayout(left, 11)
+        cols.addLayout(right, 9)
+        outer.addLayout(cols, 1)
+
+        # 1 · Jogo
+        c1 = Card("Escolha o jogo", step=1)
+        self.games = QComboBox()
+        self.games.setMinimumContentsLength(24)
+        b_iso = QPushButton("Procurar ISO…")
+        b_iso.setObjectName("mini")
+        b_iso.clicked.connect(self._browse_game)
+        b_ref = QPushButton()
+        b_ref.setObjectName("mini")
+        b_ref.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        b_ref.setToolTip("Recarregar a lista de jogos do PCSX2")
+        b_ref.clicked.connect(self.refresh_games)
+        r = QHBoxLayout()
+        r.addWidget(self.games, 1)
+        r.addWidget(b_iso)
+        r.addWidget(b_ref)
+        c1.body.addLayout(r)
+        r2 = QHBoxLayout()
+        self.fullscreen = QCheckBox("Abrir em tela cheia")
+        self.btn_launch = AnimButton("▶  Abrir jogo no PCSX2", "ghost")
+        self.btn_launch.clicked.connect(self._launch)
+        r2.addWidget(self.fullscreen)
+        r2.addStretch()
+        r2.addWidget(self.btn_launch)
+        c1.body.addLayout(r2)
+        left.addWidget(c1)
+
+        # 2 · Sala
+        c2 = Card("Abra a sala", step=2)
+        self.password = PasswordEdit(self.s.value("host/password", ""), "deixe vazio para sala sem senha")
+        self.password.textChanged.connect(self._update_invite)
+        c2.body.addWidget(field("Senha da sala (opcional)", self.password))
+        self.approve_cb = QCheckBox("Pedir minha aprovação antes de cada jogador entrar")
+        self.approve_cb.setChecked(self.s.value("host/approve", "true") == "true")
+        c2.body.addWidget(self.approve_cb)
+        r3 = QHBoxLayout()
+        self.dot = PulseDot(MUTED)
+        self.room_lbl = QLabel("Sala fechada")
+        self.room_lbl.setObjectName("big")
+        self.btn_room = AnimButton("Abrir sala", "primary", height=44)
+        self.btn_room.setMinimumWidth(170)
+        self.btn_room.clicked.connect(self.toggle_server)
+        r3.addWidget(self.dot)
+        r3.addWidget(self.room_lbl, 1)
+        r3.addWidget(self.btn_room)
+        c2.body.addLayout(r3)
+        self.room_sub = hint("")
+        c2.body.addWidget(self.room_sub)
+        left.addWidget(c2)
+
+        # 3 · Convite
+        c3 = Card("Convide seus amigos", step=3)
+        self.code = QLabel("—")
+        self.code.setObjectName("code")
+        self.code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.code.setWordWrap(True)
+        c3.body.addWidget(self.code)
+        r4 = QHBoxLayout()
+        self.addr = QComboBox()
+        self._addr_chosen = False   # vira True quando o usuário escolhe um endereço na mão
+        self.addr.currentIndexChanged.connect(self._update_invite)
+        self.addr.activated.connect(lambda _: setattr(self, "_addr_chosen", True))
+        self.btn_copy = AnimButton("📋  Copiar convite", "primary")
+        self.btn_copy.setMinimumWidth(170)
+        self.btn_copy.clicked.connect(self.copy_invite)
+        r4.addWidget(field("Endereço usado no convite", self.addr), 1)
+        r4.addWidget(self.btn_copy, 0, Qt.AlignBottom)
+        c3.body.addLayout(r4)
+        self.addr_hint = hint("Mande o convite pelo WhatsApp/Discord. Ele leva IP, porta e senha — só mande para "
+                              "quem você quer que entre.")
+        c3.body.addWidget(self.addr_hint)
+        left.addWidget(c3)
+        left.addStretch()
+
+        # Jogadores
+        c4 = Card("Jogadores")
+        self.players_box = QVBoxLayout()
+        self.players_box.setSpacing(8)
+        self.empty = QLabel("Ninguém conectado ainda.\nMande o convite para os amigos! 🎮")
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setObjectName("hint")
+        self.empty.setMinimumHeight(90)
+        self.players_box.addWidget(self.empty)
+        c4.body.addLayout(self.players_box)
+        self.cap_lbl = hint("")
+        c4.body.addWidget(self.cap_lbl)
+        right.addWidget(c4)
+
+        c5 = Card("Atividade")
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(400)
+        self.log.setMinimumHeight(160)
+        c5.body.addWidget(self.log)
+        right.addWidget(c5, 1)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scrollable(inner))
+
+        self.refresh_games()
+        self._rebuild_addresses()
+        threading.Thread(target=self._discover_wan, daemon=True).start()
+        self.adv.port.valueChanged.connect(lambda _: self._rebuild_addresses())
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(1000)
+        self._set_room_ui()
+
+    # ------------------------------------------------------------- log
+    def _append_log(self, msg):
+        self.log.appendPlainText(time.strftime("[%H:%M:%S] ") + msg)
+        if " entrou como " in msg:
+            self.main.toast(msg.split(" (")[0] + " entrou na sala 🎉", "ok")
+        elif msg.endswith(" saiu."):
+            self.main.toast(msg, "warn")
+
+    def logf(self, msg):
+        self.bridge.log.emit(msg)
+
+    # ------------------------------------------------------------- jogos
+    def refresh_games(self):
         cur = self.games.currentData() or self.s.value("host/game", "")
         extra = self.s.value("host/extra_games", []) or []
         if isinstance(extra, str):
             extra = [extra]
-        games = pcsx2.scan_games(pcsx2.game_folders(self.exe.text()))
+        games = pcsx2.scan_games(pcsx2.game_folders(self.adv.exe.text()))
         for g in extra:
             if g not in games and Path(g).exists():
                 games.append(g)
@@ -343,8 +597,7 @@ class HostTab(QWidget):
         self.games.addItem("(abrir só o PCSX2)", "")
         for g in games:
             self.games.addItem(Path(g).stem, g)
-        idx = self.games.findData(cur)
-        self.games.setCurrentIndex(max(0, idx))
+        self.games.setCurrentIndex(max(0, self.games.findData(cur)))
 
     def _browse_game(self):
         exts = " ".join("*" + e for e in sorted(pcsx2.GAME_EXTS))
@@ -358,82 +611,33 @@ class HostTab(QWidget):
                 extra.append(path)
                 self.s.setValue("host/extra_games", extra)
             self.s.setValue("host/game", path)
-            self._refresh_games()
+            self.refresh_games()
 
     def _launch(self):
-        exe = self.exe.text()
+        exe = self.adv.exe.text()
         if not Path(exe).exists():
-            QMessageBox.warning(self, APP_NAME, "Não encontrei o pcsx2-qt.exe nesse caminho.")
+            QMessageBox.warning(self, APP_NAME, "Não encontrei o PCSX2. Ajuste o caminho na aba Avançado.")
             return
         if pcsx2.is_running():
-            QMessageBox.information(self, APP_NAME, "O PCSX2 já está aberto.")
+            self.main.toast("O PCSX2 já está aberto.", "warn")
             return
-        if not self._ensure_pads():
+        if not self.ensure_pads():
             return
         game = self.games.currentData() or None
         self.s.setValue("host/game", game or "")
         pcsx2.launch(exe, game, self.fullscreen.isChecked())
+        self.main.toast(f"Abrindo {Path(game).stem if game else 'o PCSX2'}…")
         self.logf(f"Abrindo PCSX2{' com ' + Path(game).stem if game else ''}.")
 
-    def _detect_pads(self):
-        n = len(xinput.connected())
-        if self.server:
-            n = max(0, n - len(self.server.pads))
-        self.sdl_base.setValue(n)
-        self.logf(f"{n} controle(s) XInput físico(s) detectado(s). Controles PlayStation ligados direto "
-                  f"não aparecem aqui — some 1 para cada um.")
-
-    def _configure_pcsx2(self, quiet=False) -> bool:
-        exe = self.exe.text()
-        if pcsx2.is_running():
-            QMessageBox.warning(self, APP_NAME, "Feche o PCSX2 antes. Ele regrava a configuração ao sair e "
-                                                "desfaria a alteração.")
-            return False
-        mode = self.mode.currentData()
-        n = len(pcsx2.MULTITAP_MODES[mode]["slots"])
-        try:
-            ini, backup, done = pcsx2.configure_guest_pads(exe, self.sdl_base.value(), mode, n)
-        except Exception as e:
-            QMessageBox.critical(self, APP_NAME, str(e))
-            return False
-        self.s.setValue("host/sdl_base", self.sdl_base.value())
-        self.s.setValue("host/mode", mode)
-        lines = "\n".join(f"Jogador {i + 2} → porta {pcsx2.SLOT_NAMES[s]} → {d}" for i, (s, d) in enumerate(done))
-        self.logf(f"PCSX2 configurado ({ini.name}); backup em {backup.name}.")
-        self._update_pad_status()
-        if not quiet:
-            QMessageBox.information(self, APP_NAME, f"Pronto! Portas configuradas:\n\n{lines}\n\n"
-                                                    f"Backup salvo em:\n{backup}")
-        return True
-
-    def _pad_problems(self):
-        try:
-            return pcsx2.check_guest_pads(self.exe.text(), self.sdl_base.value(), self.mode.currentData())
-        except Exception as e:
-            return [f"não consegui ler a configuração do PCSX2 ({e})"]
-
-    def _update_pad_status(self):
-        problems = self._pad_problems()
-        if problems:
-            self.pad_status.setText("⚠  Controles dos convidados <b>não configurados</b> no PCSX2 — "
-                                    "o amigo não vai conseguir jogar.")
-            self.pad_status.setStyleSheet("color: #f2a541;")
-            self.pad_status.setToolTip("\n".join(problems))
-        else:
-            self.pad_status.setText("✓  PCSX2 configurado para os convidados.")
-            self.pad_status.setStyleSheet("color: #51cf66;")
-            self.pad_status.setToolTip("")
-
-    def _ensure_pads(self) -> bool:
-        """Antes de abrir o jogo ou a sala: confere os controles e oferece configurar. True = pode seguir."""
-        problems = self._pad_problems()
+    def ensure_pads(self) -> bool:
+        problems = self.adv.pad_problems()
         if not problems:
             return True
         text = ("Os controles dos convidados ainda não estão configurados no PCSX2:\n\n• "
                 + "\n• ".join(problems) + "\n\nSem isso o PCSX2 abre, mas o seu amigo não controla nada no jogo.")
         if pcsx2.is_running():
-            ans = QMessageBox.warning(self, APP_NAME, text + "\n\nFeche o PCSX2 e clique em "
-                                      "\"Configurar portas no PCSX2\".\n\nContinuar mesmo assim?",
+            ans = QMessageBox.warning(self, APP_NAME, text + "\n\nFeche o PCSX2 e clique em \"Configurar portas\" "
+                                      "(aba Avançado).\n\nContinuar mesmo assim?",
                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             return ans == QMessageBox.Yes
         box = QMessageBox(QMessageBox.Warning, APP_NAME, text, parent=self)
@@ -443,21 +647,109 @@ class HostTab(QWidget):
         box.setDefaultButton(b_cfg)
         box.exec()
         if box.clickedButton() is b_cfg:
-            return self._configure_pcsx2(quiet=True)
+            return self.adv.configure_pcsx2(quiet=True)
         return box.clickedButton() is b_skip
 
+    # ------------------------------------------------------------- endereços e convite
+    def _discover_wan(self):
+        try:
+            gw = upnp.discover()
+            ip = gw.external_ip()
+            if ip:
+                self.bridge.wan.emit(ip)
+        except Exception:
+            pass
+
+    def _on_wan(self, ip):
+        self.wan_ip = ip
+        self._rebuild_addresses()
+        self.main.home.refresh()
+
+    def _rebuild_addresses(self):
+        cur = self.addr.currentData()
+        items = []
+        for ip in local_ips():
+            d = describe_ip(ip)
+            prio = 0 if d in ("Radmin VPN", "Tailscale", "Hamachi") else 2
+            items.append((prio, ip, f"{ip}  ·  {d}"))
+        if self.wan_ip:
+            items.append((1, self.wan_ip, f"{self.wan_ip}  ·  roteador ({upnp.describe_wan(self.wan_ip)})"))
+        items.sort()
+        self.addr.blockSignals(True)
+        self.addr.clear()
+        for _, ip, label in items:
+            self.addr.addItem(label, ip)
+        idx = self.addr.findData(cur) if (cur and self._addr_chosen) else -1
+        self.addr.setCurrentIndex(idx if idx >= 0 else 0)   # sem escolha manual: sempre o melhor endereço
+        self.addr.blockSignals(False)
+        self._update_invite()
+
+    def current_invite(self):
+        ip = self.addr.currentData()
+        if not ip:
+            return None
+        port = self.server.cfg["port"] if self.server else self.adv.port.value()
+        return invite.encode(ip, port, self.password.text(), getpass.getuser())
+
+    def _update_invite(self, *_):
+        code = self.current_invite()
+        self.code.setText(code or "Nenhum endereço de rede encontrado.")
+        ip = self.addr.currentData() or ""
+        if ip and ip == self.wan_ip and upnp.describe_wan(ip).startswith("CGNAT"):
+            self.addr_hint.setText("⚠ Seu roteador está atrás de CGNAT: este convite só funciona para amigos da "
+                                   "<b>mesma operadora</b>. Para outros, usem Radmin VPN ou Tailscale.")
+        elif ip.startswith("192.168.") or ip.startswith("10."):
+            self.addr_hint.setText("⚠ Endereço da sua rede local: só funciona para quem está na mesma casa/Wi-Fi.")
+        else:
+            self.addr_hint.setText("Mande o convite pelo WhatsApp/Discord. Ele leva IP, porta e senha — só mande "
+                                   "para quem você quer que entre.")
+        self.code.setStyleSheet("" if self.server else "color: #6b7285;")
+
+    def copy_invite(self):
+        code = self.current_invite()
+        if not code:
+            return
+        self.own_invites.add(code)
+        QApplication.clipboard().setText(code)
+        self.btn_copy.flash("✓  Copiado!")
+        if self.server:
+            self.main.toast("Convite copiado! Cole no WhatsApp ou Discord do seu amigo.", "ok")
+        else:
+            self.main.toast("Convite copiado — lembre de clicar em Abrir sala!", "warn")
+
+    # ------------------------------------------------------------- aprovação
+    def _approve_blocking(self, name, ip, player):
+        req = {"name": name, "ip": ip, "player": player, "event": threading.Event(), "ok": False}
+        self.bridge.approve.emit(req)
+        req["event"].wait(APPROVAL_TIMEOUT)
+        return req["ok"]
+
+    def _ask_approval(self, req):
+        self.main.show_window()
+        self.main.tray.showMessage(APP_NAME, f"{req['name']} quer entrar na sala", QSystemTrayIcon.Information, 4000)
+        box = QMessageBox(QMessageBox.Question, APP_NAME,
+                          f"<b>{html.escape(req['name'])}</b> quer entrar na sua sala como "
+                          f"<b>Jogador {req['player']}</b>.<br><br>IP: {req['ip']}<br><br>Deixar entrar?",
+                          parent=self.main)
+        yes = box.addButton("✓  Aceitar", QMessageBox.AcceptRole)
+        box.addButton("Recusar", QMessageBox.RejectRole)
+        box.setDefaultButton(yes)
+
+        def done(_):
+            req["ok"] = box.clickedButton() is yes
+            req["event"].set()
+
+        box.finished.connect(done)
+        QTimer.singleShot((APPROVAL_TIMEOUT - 2) * 1000, lambda: box.isVisible() and box.reject())
+        box.open()
+
     # ------------------------------------------------------------- servidor
-    def _toggle_server(self):
+    def toggle_server(self):
         if self.server:
             self.server.stop()
             self.server = None
-            self.btn_start.setText("Abrir sala")
-            self.btn_start.setObjectName("primary")
-            self.btn_start.setStyle(self.btn_start.style())
-            self.status.setText("Sala fechada.")
-            self.table.setRowCount(0)
-            for w in self._locked():
-                w.setEnabled(True)
+            self._set_room_ui()
+            self.main.toast("Sala fechada.")
             return
         if not vigem_installed():
             msi = vigem_msi()
@@ -465,40 +757,37 @@ class HostTab(QWidget):
                 QMessageBox.warning(self, APP_NAME, "Para hospedar é preciso o driver ViGEmBus:\n"
                                                     "https://github.com/nefarius/ViGEmBus/releases")
                 return
-            ans = QMessageBox.question(
-                self, APP_NAME,
-                "Para hospedar é preciso o driver ViGEmBus (cria os controles virtuais dos convidados).\n\n"
-                "Abrir o instalador agora? Depois de instalar, clique em Abrir sala de novo.")
+            ans = QMessageBox.question(self, APP_NAME, "Para hospedar é preciso o driver ViGEmBus (cria os controles "
+                                       "virtuais dos convidados).\n\nAbrir o instalador agora? Depois de instalar, "
+                                       "clique em Abrir sala de novo.")
             if ans == QMessageBox.Yes:
-                import subprocess
                 subprocess.Popen(["msiexec", "/i", str(msi)])
             return
-        if not self._ensure_pads():
+        if not self.ensure_pads():
             return
-
         from host import HostServer
 
-        q = QUALITY_PRESETS[self.quality.currentIndex()]
+        a = self.adv
+        a.save()
+        q = QUALITY_PRESETS[a.quality.currentIndex()]
         cfg = {
-            "port": self.port.value(), "password": self.password.text(), "mode": self.mode.currentData(),
-            "codec": self.codec.currentData(), "height": q[1], "fps": q[2], "bitrate": self.bitrate.value(),
-            "jpeg_quality": 75, "audio": self.audio.isChecked(), "game_area_only": self.area.currentIndex() == 0,
+            "port": a.port.value(), "password": self.password.text(), "mode": a.mode.currentData(),
+            "codec": a.codec.currentData(), "height": q[1], "fps": q[2], "bitrate": a.bitrate.value(),
+            "jpeg_quality": 75, "audio": a.audio.isChecked(), "game_area_only": a.area.currentIndex() == 0,
+            "upnp": a.upnp_cb.isChecked(),
+            "approve": self._approve_blocking if self.approve_cb.isChecked() else None,
         }
-        for k in ("port", "password", "mode", "codec", "bitrate"):
-            self.s.setValue(f"host/{k}", cfg[k])
-        self.s.setValue("host/quality", self.quality.currentIndex())
-        self.s.setValue("host/audio", "true" if cfg["audio"] else "false")
-        self.s.setValue("host/sdl_base", self.sdl_base.value())
-        self.s.setValue("host/exe", self.exe.text())
+        self.s.setValue("host/password", self.password.text())
+        self.s.setValue("host/approve", "true" if self.approve_cb.isChecked() else "false")
         server = HostServer(cfg, self.logf)
         try:
             server.start()
         except Exception as e:
             msg = str(e)
             if "VIGEM" in msg.upper():
-                msg += "\n\nInstale o driver ViGEmBus (veja a aba Ajuda)."
+                msg += "\n\nReinstale o driver ViGEmBus."
             elif isinstance(e, OSError) and getattr(e, "winerror", None) == 10048:
-                msg = f"A porta {cfg['port']} já está em uso. Escolha outra."
+                msg = f"A porta {cfg['port']} já está em uso. Troque na aba Avançado."
             QMessageBox.critical(self, APP_NAME, f"Não foi possível abrir a sala:\n{msg}")
             try:
                 server.stop()
@@ -506,51 +795,64 @@ class HostTab(QWidget):
                 pass
             return
         self.server = server
-        self.btn_start.setText("Fechar sala")
-        self.btn_start.setObjectName("danger")
-        self.btn_start.setStyle(self.btn_start.style())
-        for w in self._locked():
-            w.setEnabled(False)
-        self._update_ips()
+        self._set_room_ui()
+        self.main.toast("Sala aberta! Agora copie o convite 📋", "ok")
         if not pcsx2.is_running():
             self.logf("Dica: abra o jogo no PCSX2 — os convidados verão a janela dele.")
 
-    def _locked(self):
-        return [self.port, self.password, self.mode, self.quality, self.codec, self.bitrate, self.audio, self.area,
-                self.btn_cfg]
+    def _set_room_ui(self):
+        on = self.server is not None
+        self.btn_room.setText("Fechar sala" if on else "Abrir sala")
+        self.btn_room.set_variant("danger" if on else "primary")
+        for w in self.adv.locked_widgets() + [self.password, self.approve_cb]:
+            w.setEnabled(not on)
+        if not on:
+            self.dot.set_state(MUTED, False)
+            self.room_lbl.setText("Sala fechada")
+            self.room_sub.setText("Ao abrir, a porta é liberada no roteador (UPnP) e o convite passa a funcionar.")
+            for row in list(self.rows.values()):
+                row.deleteLater()
+            self.rows.clear()
+            self.empty.show()
+            self.cap_lbl.setText("")
+        self._update_invite()
 
-    def _kick(self):
-        if not self.server:
-            return
-        row = self.table.currentRow()
-        if row < 0:
-            return
-        item = self.table.item(row, 0)
-        self.server.kick(item.data(Qt.UserRole))
+    def kick(self, slot_idx):
+        if self.server:
+            self.server.kick(slot_idx)
 
     def _tick(self):
-        self._pad_tick = getattr(self, "_pad_tick", 0) + 1
-        if self._pad_tick % 3 == 1:       # relê o PCSX2.ini a cada 3 s
-            self._update_pad_status()
         if not self.server:
             return
-        snap = sorted(self.server.snapshot(), key=lambda c: c["slot_idx"])
-        self.table.setRowCount(len(snap))
-        for r, c in enumerate(snap):
-            prev = self._prev_bytes.get(c["slot_idx"], c["bytes"])
-            kbps = max(0, c["bytes"] - prev) * 8 / 1000
-            self._prev_bytes[c["slot_idx"]] = c["bytes"]
-            slot = self.server.slots[c["slot_idx"]]
-            vals = [f"P{c['slot_idx'] + 2} ({pcsx2.SLOT_NAMES[slot]})", c["name"], c["addr"],
-                    f"{c['rtt']:.0f} ms", f"{kbps / 1000:.1f} Mbps"]
-            for col, v in enumerate(vals):
-                it = QTableWidgetItem(v)
-                if col == 0:
-                    it.setData(Qt.UserRole, c["slot_idx"])
-                self.table.setItem(r, col, it)
-        total = len(self.server.slots)
-        self.status.setText(f"<b>{len(snap)}/{total}</b> convidado(s) · captura: {self.server.capture_status}"
-                            + (f" · {self.server.capture_fps:.0f} fps" if snap else ""))
+        snap = {c["slot_idx"]: c for c in self.server.snapshot()}
+        for slot in list(self.rows):
+            if slot not in snap:
+                self.rows.pop(slot).deleteLater()
+        for slot, c in sorted(snap.items()):
+            if slot not in self.rows:
+                row = PlayerRow(slot, c["name"], self.kick)
+                self.rows[slot] = row
+                self.players_box.addWidget(row)
+                eff = QGraphicsOpacityEffect(row)
+                row.setGraphicsEffect(eff)
+                an = QPropertyAnimation(eff, b"opacity", row, duration=350, easingCurve=QEasingCurve.OutCubic)
+                an.setStartValue(0.0)
+                an.setEndValue(1.0)
+                an.finished.connect(lambda r=row: r.setGraphicsEffect(None))
+                an.start()
+            prev = self._prev_bytes.get(slot, c["bytes"])
+            self._prev_bytes[slot] = c["bytes"]
+            mbps = max(0, c["bytes"] - prev) * 8 / 1e6
+            slot_name = pcsx2.SLOT_NAMES[self.server.slots[slot]]
+            self.rows[slot].update_stats(c["rtt"], mbps, f"Jogador {slot + 2} · porta {slot_name}")
+        self.empty.setVisible(not snap)
+        n, total = len(snap), len(self.server.slots)
+        self.dot.set_state(OK, True)
+        self.room_lbl.setText(f"Sala aberta · {n}/{total}")
+        extra = f" · {self.server.upnp_status}" if self.server.upnp_status else ""
+        self.room_sub.setText(("Esperando amigos — mande o convite!" if not n else "Partida rolando!") + extra)
+        self.cap_lbl.setText(f"Captura: {self.server.capture_status}"
+                             + (f" · {self.server.capture_fps:.0f} fps" if n else ""))
 
     def shutdown(self):
         if self.server:
@@ -558,7 +860,7 @@ class HostTab(QWidget):
             self.server = None
 
 
-# =====================================================================  CONVIDADO
+# ============================================================================== ENTRAR
 class VideoView(QWidget):
     def __init__(self):
         super().__init__()
@@ -604,6 +906,7 @@ class GameWindow(QWidget):
         self.client = client
         self.setWindowTitle(title)
         self.resize(1024, 768)
+        self.setStyleSheet("background: black;")
         self.view = VideoView()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -615,8 +918,7 @@ class GameWindow(QWidget):
 
     def _stats(self, s):
         pad = "teclado" if s.get("pad") is None else f"controle {s['pad'] + 1}"
-        self.view.overlay = (f"ping {s['rtt']:.0f} ms · {s['fps']:.0f} fps · "
-                             f"{s['kbps'] / 1000:.1f} Mbps · {pad}")
+        self.view.overlay = f"ping {s['rtt']:.0f} ms · {s['fps']:.0f} fps · {s['kbps'] / 1000:.1f} Mbps · {pad}"
         self.view.update()
 
     def keyPressEvent(self, e):
@@ -654,121 +956,250 @@ class GameWindow(QWidget):
         super().closeEvent(e)
 
 
-class GuestTab(QWidget):
-    def __init__(self, settings: QSettings):
+class JoinPage(QWidget):
+    def __init__(self, main, settings):
         super().__init__()
+        self.main = main
         self.s = settings
         self.client = None
         self.window = None
+        self.inv = None
+        self.target = ""
 
-        root = QVBoxLayout(self)
-        top = QHBoxLayout()
-        root.addLayout(top)
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(16)
+        outer.addWidget(page_header("Entrar numa sala", "Cole o convite que seu amigo mandou e clique em Entrar."))
+        cols = QHBoxLayout()
+        cols.setSpacing(16)
+        left = QVBoxLayout()
+        left.setSpacing(16)
+        right = QVBoxLayout()
+        right.setSpacing(16)
+        cols.addLayout(left, 11)
+        cols.addLayout(right, 9)
+        outer.addLayout(cols, 1)
 
-        g1 = QGroupBox("Entrar numa sala")
-        f1 = QFormLayout(g1)
+        c1 = Card("Convite")
+        r = QHBoxLayout()
+        self.code = QLineEdit()
+        self.code.setObjectName("invite")
+        self.code.setPlaceholderText("PS2-XXXX-XXXX-XXXX-…")
+        self.code.setClearButtonEnabled(True)
+        self.code.textChanged.connect(self._parse)
+        b_paste = AnimButton("📋 Colar", "ghost", height=46)
+        b_paste.setMinimumWidth(100)
+        b_paste.clicked.connect(self.paste)
+        r.addWidget(self.code, 1)
+        r.addWidget(b_paste)
+        c1.body.addLayout(r)
+        ir = QHBoxLayout()
+        self.inv_icon = StatusIcon()
+        self.inv_icon.hide()
+        self.inv_lbl = hint("O convite começa com PS2- e leva IP, porta e senha da sala.")
+        ir.addWidget(self.inv_icon)
+        ir.addWidget(self.inv_lbl, 1)
+        c1.body.addLayout(ir)
+
+        self.name = QLineEdit(self.s.value("guest/name", getpass.getuser()[:20]))
+        self.name.setMaxLength(24)
+        c1.body.addWidget(field("Seu nome (aparece para o host)", self.name))
+
+        # modo manual (escondido)
+        self.exp = QToolButton()
+        self.exp.setObjectName("expander")
+        self.exp.setText("  Entrar com IP e senha (sem convite)")
+        self.exp.setCheckable(True)
+        self.exp.setArrowType(Qt.RightArrow)
+        self.exp.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.exp.toggled.connect(self._toggle_manual)
+        c1.body.addWidget(self.exp)
+        self.manual = QWidget()
+        g = QGridLayout(self.manual)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(12)
         self.host = QLineEdit(self.s.value("guest/host", ""))
         self.host.setPlaceholderText("ex.: 26.12.34.56")
-        self.port = QSpinBox()
-        self.port.setRange(1024, 65535)
-        self.port.setValue(int(self.s.value("guest/port", DEFAULT_PORT)))
-        self.name = QLineEdit(self.s.value("guest/name", socket.gethostname()[:20]))
-        self.password = QLineEdit(self.s.value("guest/password", ""))
-        self.password.setEchoMode(QLineEdit.Password)
-        self.password.setPlaceholderText("se o host definiu")
+        self.port = spin(1024, 65535, int(self.s.value("guest/port", DEFAULT_PORT)))
+        self.password = PasswordEdit("", "se o host definiu")
+        g.addWidget(field("IP do host", self.host), 0, 0)
+        g.addWidget(field("Porta", self.port), 0, 1)
+        g.addWidget(field("Senha", self.password), 1, 0, 1, 2)
+        self.manual.setMaximumHeight(0)
+        self._man_anim = QPropertyAnimation(self.manual, b"maximumHeight", self, duration=260,
+                                            easingCurve=QEasingCurve.OutCubic)
+        c1.body.addWidget(self.manual)
+
+        st = QHBoxLayout()
+        self.spinner = Spinner()
+        self.spinner.hide()
+        self.st_icon = StatusIcon()
+        self.st_icon.hide()
+        self.st_lbl = QLabel("")
+        self.st_lbl.setWordWrap(True)
+        self.btn = AnimButton("Entrar na sala", "primary", height=46)
+        self.btn.setMinimumWidth(180)
+        self.btn.clicked.connect(self.toggle)
+        st.addWidget(self.spinner)
+        st.addWidget(self.st_icon)
+        st.addWidget(self.st_lbl, 1)
+        st.addWidget(self.btn)
+        c1.body.addLayout(st)
+        left.addWidget(c1)
+        left.addStretch()
+
+        c2 = Card("Seu controle")
         self.pad = QComboBox()
         self.pad.addItem("Automático (primeiro controle encontrado)", -1)
         for i in range(4):
             self.pad.addItem(f"Controle XInput {i + 1}", i)
         self.pad.addItem("Somente teclado", -2)
         self.pad.setCurrentIndex(max(0, self.pad.findData(int(self.s.value("guest/pad", -1)))))
-        self.pads_lbl = hint("")
+        c2.body.addWidget(field("Usar", self.pad))
+        self.pad_view = GamepadView()
+        c2.body.addWidget(self.pad_view)
+        self.pad_lbl = hint("")
+        self.pad_lbl.setAlignment(Qt.AlignCenter)
+        c2.body.addWidget(self.pad_lbl)
         self.volume = QSlider(Qt.Horizontal)
         self.volume.setRange(0, 150)
         self.volume.setValue(int(self.s.value("guest/volume", 100)))
         self.volume.valueChanged.connect(self._volume)
-        f1.addRow("IP do host:", self.host)
-        f1.addRow("Porta:", self.port)
-        f1.addRow("Seu nome:", self.name)
-        f1.addRow("Senha:", self.password)
-        f1.addRow("Controle:", self.pad)
-        f1.addRow("", self.pads_lbl)
-        f1.addRow("Volume:", self.volume)
-        self.btn = QPushButton("Conectar")
-        self.btn.setObjectName("primary")
-        self.btn.setMinimumHeight(38)
-        self.btn.clicked.connect(self._toggle)
-        f1.addRow(self.btn)
-        top.addWidget(g1, 3)
-
-        g2 = QGroupBox("Status")
-        v2 = QVBoxLayout(g2)
-        self.status = QLabel("Desconectado.")
-        self.status.setObjectName("big")
-        self.status.setWordWrap(True)
-        self.detail = hint("Peça ao host o IP e a porta que aparecem na aba Hospedar dele.")
-        v2.addWidget(self.status)
-        v2.addWidget(self.detail)
-        v2.addStretch()
-        top.addWidget(g2, 2)
-
-        g3 = QGroupBox("Teclado (com a janela do jogo em foco)")
-        v3 = QVBoxLayout(g3)
+        c2.body.addWidget(field("Volume do jogo", self.volume))
         from guest import KEYBOARD_HELP
-        v3.addWidget(hint(KEYBOARD_HELP))
-        v3.addWidget(hint("Controle de PlayStation? Use o DS4Windows ou o Steam para ele aparecer como XInput."))
-        root.addWidget(g3)
-        root.addStretch()
+        kb = hint("<b>Teclado:</b> " + html.escape(KEYBOARD_HELP).replace("\n", "<br>"))
+        c2.body.addWidget(kb)
+        right.addWidget(c2)
+        right.addStretch()
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._scan_pads)
-        self.timer.start(2000)
-        self._scan_pads()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scrollable(inner))
+        self.pad_timer = QTimer(self)
+        self.pad_timer.timeout.connect(self._poll_pad)
+        self.pad_timer.start(33)
+        self._set_idle()
 
-    def _scan_pads(self):
-        c = xinput.connected()
-        self.pads_lbl.setText("Detectados: " + (", ".join(f"Controle {i + 1}" for i in c) if c else "nenhum"))
+    # ------------------------------------------------------------- controle ao vivo
+    def _poll_pad(self):
+        if not self.isVisible():
+            return
+        sel = self.pad.currentData()
+        idx = None
+        if sel >= 0:
+            idx = sel if xinput.get_state(sel) is not None else None
+        elif sel == -1:
+            c = xinput.connected()
+            idx = c[0] if c else None
+        st = xinput.get_state(idx) if idx is not None else None
+        self.pad_view.set_state(st)
+        self.pad_lbl.setText(f"Controle {idx + 1} — aperte os botões para testar" if st else
+                             ("Nenhum controle — você vai jogar pelo teclado" if sel != -2 else "Somente teclado"))
 
     def _volume(self, v):
         self.s.setValue("guest/volume", v)
         if self.client:
             self.client.set_volume(v / 100)
 
-    def _toggle(self):
+    # ------------------------------------------------------------- convite
+    def paste(self):
+        self.code.setText(QApplication.clipboard().text().strip())
+        if not self.inv:
+            self.main.toast("Não achei um convite na área de transferência.", "warn")
+
+    def _parse(self, text):
+        self.inv = invite.decode(text)
+        if not text.strip():
+            self.inv_icon.hide()
+            self.inv_lbl.setText("O convite começa com PS2- e leva IP, porta e senha da sala.")
+        elif self.inv:
+            self.inv_icon.set("ok")
+            self.inv_icon.show()
+            self.inv_lbl.setText(f"Convite de <b>{html.escape(self.inv['name'] or 'host')}</b> · "
+                                 f"{self.inv['host']}:{self.inv['port']}"
+                                 + (" · com senha" if self.inv["password"] else ""))
+        else:
+            self.inv_icon.set("bad")
+            self.inv_icon.show()
+            self.inv_lbl.setText("Código inválido — confira se copiou o convite inteiro.")
+
+    def use_invite(self, inv, connect=False):
+        self.exp.setChecked(False)
+        self.code.setText(inv["code"])
+        if connect and not self.client:
+            self.toggle()
+
+    def _toggle_manual(self, on):
+        self.exp.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+        self._man_anim.stop()
+        self._man_anim.setStartValue(self.manual.maximumHeight())
+        self._man_anim.setEndValue(self.manual.sizeHint().height() if on else 0)
+        self._man_anim.start()
+
+    # ------------------------------------------------------------- estados
+    def _state(self, kind, text):
+        self.spinner.setVisible(kind == "busy")
+        self.st_icon.setVisible(kind in ("ok", "bad", "warn"))
+        if kind in ("ok", "bad", "warn"):
+            self.st_icon.set(kind)
+        self.st_lbl.setText(text)
+
+    def _set_idle(self, text=""):
+        self.client = None
+        self.btn.setText("Entrar na sala")
+        self.btn.set_variant("primary")
+        self._state("bad" if text else "idle", text)
+
+    # ------------------------------------------------------------- conexão
+    def toggle(self):
         if self.client:
             if self.window:
                 self.window.close()
             else:
                 self.client.stop()
+                self._set_idle("Cancelado.")
             return
-        host = self.host.text().strip()
-        if not host:
-            QMessageBox.warning(self, APP_NAME, "Digite o IP do host.")
-            return
-        for k, w in (("host", self.host), ("name", self.name), ("password", self.password)):
-            self.s.setValue(f"guest/{k}", w.text())
-        self.s.setValue("guest/port", self.port.value())
+        if self.exp.isChecked():
+            host, port, pw = self.host.text().strip(), self.port.value(), self.password.text()
+            if not host:
+                self.main.toast("Digite o IP do host.", "warn")
+                self.host.setFocus()
+                return
+            self.s.setValue("guest/host", host)
+            self.s.setValue("guest/port", port)
+            who = host
+        else:
+            if not self.inv:
+                self.main.toast("Cole o convite que seu amigo mandou.", "warn")
+                self.code.setFocus()
+                return
+            host, port, pw = self.inv["host"], self.inv["port"], self.inv["password"]
+            who = self.inv["name"] or host
+        self.target = who
+        name = self.name.text().strip() or "Convidado"
+        self.s.setValue("guest/name", name)
         self.s.setValue("guest/pad", self.pad.currentData())
         from guest import GuestClient
 
-        self.client = GuestClient(host, self.port.value(), self.name.text().strip() or "Convidado",
-                                  self.password.text(), self.pad.currentData(), self.volume.value() / 100)
+        self.client = GuestClient(host, port, name, pw, self.pad.currentData(), self.volume.value() / 100)
         self.client.welcome.connect(self._on_welcome)
+        self.client.waiting.connect(lambda: self._state("busy", f"Aguardando <b>{html.escape(who)}</b> aceitar…"))
         self.client.failed.connect(self._on_failed)
         self.client.disconnected.connect(self._on_disconnected)
-        self.status.setText("Conectando…")
+        self._state("busy", f"Conectando em {html.escape(who)}…")
         self.btn.setText("Cancelar")
-        self.btn.setObjectName("danger")
-        self.btn.setStyle(self.btn.style())
+        self.btn.set_variant("ghost")
         self.client.start()
 
     def _on_welcome(self, info):
-        self.status.setText(f"Conectado como Jogador {info['player']}")
         extra = "" if info.get("audio") else " · sem áudio"
         if info.get("audio_error"):
             extra = f" · áudio falhou: {info['audio_error']}"
-        self.detail.setText(f"Porta {info['slot']} no PCSX2 do host · vídeo {info['codec'].upper()}{extra}")
-        self.btn.setText("Desconectar")
+        self._state("ok", f"<b>Conectado como Jogador {info['player']}</b> · porta {info['slot']}{extra}")
+        self.btn.setText("Sair da sala")
+        self.btn.set_variant("danger")
+        self.main.toast(f"Você entrou como Jogador {info['player']}! 🎮", "ok")
         self.window = GameWindow(self.client, f"{APP_NAME} — Jogador {info['player']}")
         self.window.view.message = "Aguardando a imagem do host…"
         self.window.closed.connect(lambda: setattr(self, "window", None))
@@ -776,120 +1207,372 @@ class GuestTab(QWidget):
         self.window.activateWindow()
 
     def _on_failed(self, msg):
-        self._reset()
-        self.status.setText("Não conectou")
-        self.detail.setText(msg)
+        self._set_idle(msg)
+        self.main.toast(msg, "bad")
 
     def _on_disconnected(self, reason):
         if self.window:
             w, self.window = self.window, None
             w.close()
-        self._reset()
-        self.status.setText("Desconectado.")
-        self.detail.setText(reason)
-
-    def _reset(self):
-        self.client = None
-        self.btn.setText("Conectar")
-        self.btn.setObjectName("primary")
-        self.btn.setStyle(self.btn.style())
+        self._set_idle()
+        self._state("warn", reason)
+        self.main.toast(reason, "warn")
 
     def shutdown(self):
         if self.client:
             self.client.stop()
 
 
-# =====================================================================  AJUDA
+# ============================================================================== CONTROLES
+class PadCard(Card):
+    def __init__(self, title):
+        super().__init__(title)
+        self.view = GamepadView()
+        self.sub = hint("")
+        self.sub.setAlignment(Qt.AlignCenter)
+        self.body.addWidget(self.view)
+        self.body.addWidget(self.sub)
+        self.setMinimumWidth(300)
+        self.title_lbl = self.findChild(QLabel, "cardtitle")
+
+
+class ControllersPage(QWidget):
+    def __init__(self, main):
+        super().__init__()
+        self.main = main
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(16)
+        root.addWidget(page_header("Controles", "Os controles conectados agora, ao vivo. Aperte os botões para testar."))
+        lab = QLabel("FÍSICOS — ligados neste PC")
+        lab.setObjectName("flabel")
+        root.addWidget(lab)
+        self.phys_grid = QGridLayout()
+        self.phys_grid.setSpacing(16)
+        root.addLayout(self.phys_grid)
+        self.phys_cards = []
+        for i in range(4):
+            c = PadCard(f"🎮  Controle {i + 1}")
+            self.phys_cards.append(c)
+            self.phys_grid.addWidget(c, i // 2, i % 2)
+        self.no_phys = hint("Nenhum controle físico encontrado. Controles de PlayStation precisam do DS4Windows ou "
+                            "do Steam para aparecer como XInput.")
+        root.addWidget(self.no_phys)
+        lab2 = QLabel("VIRTUAIS — um para cada amigo (só com a sala aberta)")
+        lab2.setObjectName("flabel")
+        root.addSpacing(8)
+        root.addWidget(lab2)
+        self.virt_grid = QGridLayout()
+        self.virt_grid.setSpacing(16)
+        root.addLayout(self.virt_grid)
+        self.virt_cards = []
+        for i in range(3):
+            c = PadCard(f"🌐  Jogador {i + 2}")
+            self.virt_cards.append(c)
+            self.virt_grid.addWidget(c, i // 2, i % 2)
+        self.no_virt = hint("Abra a sala na aba Hospedar para criar os controles virtuais dos amigos.")
+        root.addWidget(self.no_virt)
+        root.addStretch()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scrollable(inner))
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._poll)
+        self.timer.start(33)
+
+    def _poll(self):
+        if not self.isVisible():
+            return
+        srv = self.main.host.server
+        virtual = set(srv.virtual_slots) if srv else set()
+        any_phys = False
+        n = 0
+        for i in range(4):
+            st = None if i in virtual else xinput.get_state(i)
+            card = self.phys_cards[i]
+            card.setVisible(st is not None)
+            if st is not None:
+                any_phys = True
+                n += 1
+                card.view.set_state(st)
+                card.sub.setText(f"XInput {i + 1} · no PCSX2 do host costuma ser SDL-{n - 1}")
+        self.no_phys.setVisible(not any_phys)
+
+        clients = {c["slot_idx"]: c for c in srv.snapshot()} if srv else {}
+        for i, card in enumerate(self.virt_cards):
+            show = bool(srv) and i < len(srv.pads)
+            card.setVisible(show)
+            if not show:
+                continue
+            c = clients.get(i)
+            card.view.set_state(srv.pad_state(i) if c else None)
+            slot = pcsx2.SLOT_NAMES[srv.slots[i]]
+            sdl = self.main.adv.sdl_base.value() + i
+            who = f"<b>{html.escape(c['name'])}</b> · {c['rtt']:.0f} ms" if c else "livre — aguardando amigo"
+            card.sub.setText(f"{who}<br>porta {slot} · SDL-{sdl}")
+        self.no_virt.setVisible(not srv)
+
+
+# ============================================================================== INÍCIO
+class CheckRow(QWidget):
+    def __init__(self):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 4)
+        self.icon = StatusIcon()
+        self.text = QLabel()
+        self.text.setWordWrap(True)
+        self.btn = QPushButton()
+        self.btn.setObjectName("mini")
+        self.btn.hide()
+        self._cb = None
+        self.btn.clicked.connect(lambda: self._cb and self._cb())
+        lay.addWidget(self.icon)
+        lay.addWidget(self.text, 1)
+        lay.addWidget(self.btn)
+
+    def set(self, kind, text, fix=None, fix_cb=None):
+        self.icon.set(kind)
+        self.text.setText(text)
+        self.btn.setVisible(bool(fix))
+        if fix:
+            self.btn.setText(fix)
+            self._cb = fix_cb
+
+
+class HomePage(QWidget):
+    def __init__(self, main):
+        super().__init__()
+        self.main = main
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(18)
+        root.addWidget(page_header(f"Bora jogar, {getpass.getuser()}! 👋",
+                                   "Multiplayer local do PCSX2 pela internet. O que você quer fazer?"))
+        cards = QHBoxLayout()
+        cards.setSpacing(16)
+        for icon, title, text, btn, variant, cb in (
+                ("🎮", "Hospedar partida", "Você roda o jogo no seu PCSX2 e convida os amigos para jogar junto.",
+                 "Começar", "primary", lambda: main.go(2)),
+                ("🔗", "Entrar com convite", "Seu amigo mandou um código PS2-…? Cole aqui e entre direto na sala.",
+                 "Colar convite", "ghost", self._join)):
+            c = Card()
+            c.setMinimumHeight(210)
+            ic = QLabel(icon)
+            ic.setStyleSheet("font-size: 34pt;")
+            t = QLabel(title)
+            t.setObjectName("cardtitle")
+            t.setStyleSheet("font-size: 15pt;")
+            d = hint(text)
+            b = AnimButton(btn, variant, height=44)
+            b.clicked.connect(cb)
+            c.body.addWidget(ic)
+            c.body.addWidget(t)
+            c.body.addWidget(d)
+            c.body.addStretch()
+            c.body.addWidget(b)
+            cards.addWidget(c)
+        root.addLayout(cards)
+
+        chk = Card("Está tudo pronto?")
+        self.r_pcsx2, self.r_pads, self.r_vigem, self.r_net = CheckRow(), CheckRow(), CheckRow(), CheckRow()
+        for r in (self.r_pcsx2, self.r_pads, self.r_vigem, self.r_net):
+            chk.body.addWidget(r)
+        root.addWidget(chk)
+        root.addStretch()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scrollable(inner))
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(3000)
+
+    def _join(self):
+        self.main.go(3)
+        self.main.join.paste()
+
+    def _install_vigem(self):
+        msi = vigem_msi()
+        if msi:
+            subprocess.Popen(["msiexec", "/i", str(msi)])
+
+    def refresh(self):
+        adv, host = self.main.adv, self.main.host
+        if Path(adv.exe.text()).exists():
+            self.r_pcsx2.set("ok", "PCSX2 encontrado.")
+        else:
+            self.r_pcsx2.set("bad", "PCSX2 não encontrado — só necessário para hospedar.", "Localizar",
+                             lambda: (self.main.go(5), adv._browse_exe()))
+        if adv.pad_problems():
+            self.r_pads.set("warn", "Controles dos convidados não configurados no PCSX2.", "Configurar",
+                            lambda: (adv.configure_pcsx2(), self.refresh()))
+        else:
+            self.r_pads.set("ok", "PCSX2 pronto para receber os controles dos convidados.")
+        if vigem_installed():
+            self.r_vigem.set("ok", "Driver de controle virtual (ViGEmBus) instalado.")
+        else:
+            self.r_vigem.set("warn", "Driver ViGEmBus ausente — necessário para hospedar.", "Instalar",
+                             self._install_vigem)
+        vpn = [ip for ip in local_ips() if describe_ip(ip) in ("Radmin VPN", "Tailscale", "Hamachi")]
+        if vpn:
+            self.r_net.set("ok", f"VPN de jogos ativa ({describe_ip(vpn[0])}: {vpn[0]}) — funciona com qualquer amigo.")
+        elif host.wan_ip:
+            d = upnp.describe_wan(host.wan_ip)
+            kind = "warn" if d.startswith("CGNAT") else "ok"
+            self.r_net.set(kind, f"Roteador com UPnP · IP {host.wan_ip} ({d}).")
+        else:
+            self.r_net.set("warn", "Roteador sem UPnP e nenhuma VPN — use Radmin VPN ou Tailscale para jogar online.")
+
+
+# ============================================================================== AJUDA
 HELP = """
 <h2>Como funciona</h2>
-<p>O <b>host</b> roda o PCSX2 no PC dele e joga como Jogador 1. O PS2 Online transmite a imagem e o som
-para os <b>convidados</b>, e cada convidado vira um controle virtual de Xbox no PC do host
-(Jogador 2, 3 ou 4). Para o jogo, é como se todos estivessem no mesmo sofá.</p>
-
-<h2>Host — uma vez só</h2>
+<p>O <b>host</b> roda o PCSX2 no PC dele e joga como Jogador 1. O PS2 Online transmite a imagem e o som para os
+<b>convidados</b>, e cada convidado vira um controle virtual no PC do host (Jogador 2, 3 ou 4). Para o jogo, é
+como se todos estivessem no mesmo sofá.</p>
+<h2>Hospedar</h2>
 <ol>
-<li>Instale o driver <b>ViGEmBus</b> (github.com/nefarius/ViGEmBus/releases) — ele cria os controles virtuais.</li>
-<li>Feche o PCSX2, escolha o <b>Modo</b> (2 jogadores ou multitap para 4) e o <b>Nº SDL</b>
-(quantos controles você mesmo tem ligados) e clique <b>Configurar portas no PCSX2</b>.
-É feito backup do PCSX2.ini antes.</li>
-<li>Na primeira vez que abrir a sala, o Windows pergunta sobre o firewall: permita em redes
-<b>privadas</b> (e públicas, se usar VPN).</li>
+<li>Na tela <b>Início</b>, confira se está tudo ✓ (o app ajuda a corrigir o que faltar).</li>
+<li>Em <b>Hospedar</b>: escolha o jogo, clique <b>Abrir sala</b> e depois <b>Copiar convite</b>.</li>
+<li>Mande o convite para o amigo. Quando ele tentar entrar, você aprova (se a opção estiver ligada).</li>
+<li>Abra o jogo pelo botão <b>Abrir jogo no PCSX2</b> e deixe a janela visível (não minimize).</li>
 </ol>
-
-<h2>Host — para jogar</h2>
+<h2>Entrar</h2>
 <ol>
-<li>Clique <b>Abrir sala</b>.</li>
-<li>Abra o jogo pelo botão <b>Abrir jogo no PCSX2</b> e deixe a janela dele visível (não minimize).</li>
-<li>Passe para os amigos o IP e a porta mostrados.</li>
+<li>Copie o convite que o amigo mandou e abra o PS2 Online — ele detecta o convite e pergunta se quer entrar.</li>
+<li>Ou vá em <b>Entrar</b>, cole o código e clique <b>Entrar na sala</b>.</li>
+<li>Na janela do jogo: <b>F11</b> = tela cheia, <b>F1</b> = ping/fps.</li>
 </ol>
-
-<h2>Convidado</h2>
-<ol>
-<li>Digite IP, porta e senha do host e clique <b>Conectar</b>.</li>
-<li>A janela do jogo abre. <b>F11</b> = tela cheia, <b>F1</b> = estatísticas.</li>
-<li>Use um controle XInput (Xbox, ou PlayStation pelo DS4Windows/Steam) ou o teclado.</li>
-</ol>
-
-<h2>Conectando pela internet</h2>
-<p><b>Mais fácil:</b> todos instalam o <b>Radmin VPN</b>, <b>ZeroTier</b> ou <b>Tailscale</b> e entram na
-mesma rede; o convidado usa o IP do host nessa rede. Funciona <b>mesmo com CGNAT</b> e não expõe nada
-para a internet. <b>Alternativa:</b> o host libera a porta TCP (padrão 27900) no roteador e passa o IP
-público — isso <b>não funciona com CGNAT</b> (se o IP WAN mostrado no roteador for diferente do IP público,
-ou começar com 100.64–100.127, é CGNAT).</p>
-
+<h2>Internet e CGNAT</h2>
+<p>O app abre a porta no roteador sozinho (UPnP) e a fecha quando você sai. Mas se a sua operadora usa
+<b>CGNAT</b> (IP do roteador começando com 100.64–100.127), só amigos da <b>mesma operadora</b> conseguem
+entrar assim. Para os outros, usem <b>Radmin VPN</b> ou <b>Tailscale</b>: o convite passa a usar o IP da VPN.</p>
 <h2>Dicas</h2>
 <ul>
-<li>Travando? Baixe a <b>Qualidade</b> ou a <b>Taxa de vídeo</b>. Placa NVIDIA/AMD/Intel: escolha o codificador
-dela para aliviar o processador.</li>
-<li>O áudio enviado é o som do PC inteiro do host — se ele usa Discord nas caixas de som, o convidado ouve
-eco. Use fone, ou desligue o áudio da sala e usem a chamada.</li>
-<li>Jogos para 3–4 jogadores precisam do modo multitap certo (alguns usam a porta 1, outros a 2) —
-veja a configuração do jogo.</li>
+<li>Travando? Em <b>Avançado</b>, baixe a qualidade ou a taxa de vídeo, ou use o codificador da sua placa de vídeo.</li>
+<li>O áudio enviado é o som do PC inteiro do host — use fone se estiverem em chamada.</li>
+<li>A aba <b>Controles</b> mostra ao vivo se o controle de cada amigo está chegando.</li>
 <li>Ping abaixo de ~60 ms é ótimo; acima de 120 ms jogos de luta ficam difíceis.</li>
 </ul>
 """
 
 
+class HelpPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.addWidget(page_header("Ajuda", f"PS2 Online {APP_VERSION}"))
+        c = Card()
+        lbl = QLabel(HELP)
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setStyleSheet("font-size: 10.5pt; line-height: 140%;")
+        c.body.addWidget(lbl)
+        root.addWidget(c)
+        root.addStretch()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scrollable(inner))
+
+
+# ============================================================================== JANELA
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(1180, 760)
+        self.resize(1240, 800)
+        self.setMinimumSize(980, 640)
         self.settings = QSettings("PS2Online", "PS2Online")
-        tabs = QTabWidget()
-        self.host_tab = HostTab(self.settings)
-        self.guest_tab = GuestTab(self.settings)
-        help_lbl = QLabel(HELP)
-        help_lbl.setWordWrap(True)
-        help_lbl.setTextFormat(Qt.RichText)
-        help_lbl.setAlignment(Qt.AlignTop)
-        help_lbl.setContentsMargins(16, 8, 16, 8)
-        tabs.addTab(self.host_tab, "🎮  Hospedar")
-        tabs.addTab(self.guest_tab, "🔌  Entrar")
-        tabs.addTab(help_lbl, "❓  Ajuda")
-        tabs.setCurrentIndex(int(self.settings.value("ui/tab", 0)))
-        tabs.currentChanged.connect(lambda i: self.settings.setValue("ui/tab", i))
+        self._last_offered = None
 
-        header = QWidget()
-        hl = QHBoxLayout(header)
-        hl.setContentsMargins(4, 0, 4, 4)
-        title = QLabel("PS2 <span style='color:#4c6ef5'>Online</span>")
-        title.setStyleSheet("font-size: 20pt; font-weight: 800;")
-        sub = hint("Multiplayer local do PCSX2 pela internet")
-        hl.addWidget(title)
-        hl.addWidget(sub, 1, Qt.AlignBottom)
-        central = QWidget()
-        cl = QVBoxLayout(central)
-        cl.setContentsMargins(14, 10, 14, 14)
-        cl.addWidget(header)
-        cl.addWidget(tabs, 1)
-        self.setCentralWidget(central)
+        root = QWidget()
+        root.setObjectName("root")
+        h = QHBoxLayout(root)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+        self.sidebar = Sidebar()
+        logo = QLabel("PS2 <span style='color:#5c7cfa'>Online</span>")
+        logo.setStyleSheet("font-size: 17pt; font-weight: 800; padding: 0 6px 14px 6px;")
+        self.sidebar.lay.addWidget(logo)
+        self.stack = FadeStack()
+        self.stack.setObjectName("content")
 
-        self._quitting = False
-        self._tray_hint_shown = False
+        self.adv = AdvancedPage(self, self.settings)
+        self.host = HostPage(self, self.adv, self.settings)
+        self.join = JoinPage(self, self.settings)
+        self.home = HomePage(self)
+        self.pads = ControllersPage(self)
+        self.help = HelpPage()
+        # índices: 0 início, 1 (reservado p/ ordem visual), ...
+        self.pages = [("🏠   Início", self.home), ("🎮   Hospedar", self.host), ("🔗   Entrar", self.join),
+                      ("🕹   Controles", self.pads), ("⚙   Avançado", self.adv), ("❓   Ajuda", self.help)]
+        for label, page in self.pages:
+            self.sidebar.add(label)
+            self.stack.addWidget(page)
+        self.sidebar.lay.addStretch()
+        pill = QWidget()
+        pl = QHBoxLayout(pill)
+        pl.setContentsMargins(4, 0, 4, 0)
+        self.status_dot = PulseDot(MUTED, 10)
+        self.status_lbl = QLabel("Inativo")
+        self.status_lbl.setObjectName("hint")
+        pl.addWidget(self.status_dot)
+        pl.addWidget(self.status_lbl, 1)
+        self.sidebar.lay.addWidget(pill)
+        ver = hint(f"v{APP_VERSION}")
+        ver.setContentsMargins(8, 4, 0, 0)
+        self.sidebar.lay.addWidget(ver)
+        self.sidebar.changed.connect(self.stack.fade_to)
+        h.addWidget(self.sidebar)
+        h.addWidget(self.stack, 1)
+        self.setCentralWidget(root)
+        self._toast = Toast(root)
+
+        start = int(self.settings.value("ui/page", 0))
+        start = start if 0 <= start < len(self.pages) else 0
+        self.stack.setCurrentIndex(start)
+        QTimer.singleShot(0, lambda: self.sidebar.select(start, animate=False))
+        self.sidebar.changed.connect(lambda i: self.settings.setValue("ui/page", i))
+
         self._build_tray()
+        self.home.refresh()
+        QGuiApplication.instance().applicationStateChanged.connect(self._app_state)
+        QTimer.singleShot(900, self.check_clipboard)
 
-    # ------------------------------------------------------------- bandeja do sistema
+    # ------------------------------------------------------------- navegação / avisos
+    def go(self, page_number):
+        """page_number: 1 = Início, 2 = Hospedar, 3 = Entrar, 4 = Controles, 5 = Avançado, 6 = Ajuda."""
+        self.sidebar.select(page_number - 1)
+
+    def toast(self, text, kind="info"):
+        self._toast.show_msg(text, kind)
+
+    # ------------------------------------------------------------- convite na área de transferência
+    def _app_state(self, state):
+        if state == Qt.ApplicationActive:
+            QTimer.singleShot(150, self.check_clipboard)
+
+    def check_clipboard(self):
+        if self.host.server or self.join.client or QApplication.activeModalWidget():
+            return
+        inv = invite.decode(QApplication.clipboard().text())
+        if not inv or inv["code"] in self.host.own_invites or inv["code"] == self._last_offered:
+            return
+        if inv["host"] in local_ips() or inv["host"] == self.host.wan_ip:   # convite da minha própria sala
+            return
+        self._last_offered = inv["code"]
+        who = inv["name"] or inv["host"]
+        ans = QMessageBox.question(self, APP_NAME, f"Encontrei um convite de <b>{html.escape(who)}</b> "
+                                                   f"({inv['host']}:{inv['port']}).<br><br>Entrar na sala agora?")
+        if ans == QMessageBox.Yes:
+            self.go(3)
+            self.join.use_invite(inv, connect=True)
+
+    # ------------------------------------------------------------- bandeja
     def _build_tray(self):
         self.tray = QSystemTrayIcon(QIcon(str(BASE_DIR / "icon.png")), self)
         menu = QMenu()
@@ -897,41 +1580,35 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         self.act_status = menu.addAction("Sala fechada")
         self.act_status.setEnabled(False)
-        self.act_room = menu.addAction("Abrir sala", self._tray_toggle_room)
+        self.act_room = menu.addAction("Abrir sala", lambda: (self.go(2), self.host.toggle_server()))
+        self.act_copy = menu.addAction("Copiar convite", self.host.copy_invite)
         menu.addSeparator()
         menu.addAction("Sair do PS2 Online", self.quit_app)
         self.tray.setContextMenu(menu)
-        self.tray.activated.connect(self._tray_activated)
+        self.tray.activated.connect(
+            lambda r: self.show_window() if r in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None)
         self.tray.show()
-        self._tray_timer = QTimer(self)
-        self._tray_timer.timeout.connect(self._update_tray)
-        self._tray_timer.start(1000)
-        self._update_tray()
+        t = QTimer(self)
+        t.timeout.connect(self._update_status)
+        t.start(1000)
+        self._update_status()
 
-    def _busy(self):
-        return self.host_tab.server is not None or self.guest_tab.client is not None
-
-    def _update_tray(self):
-        srv = self.host_tab.server
-        if srv:
-            n, total = len(srv.snapshot()), len(srv.slots)
-            status = f"Sala aberta · {n}/{total} convidado(s)"
-            self.act_room.setText("Fechar sala")
+    def _update_status(self):
+        srv = self.host.server
+        if self.join.client and self.join.window:
+            text, color, pulse = f"Jogando em {self.join.target}", ACCENT, True
+        elif self.join.client:
+            text, color, pulse = "Conectando…", WARN, True
+        elif srv:
+            n = len(srv.snapshot())
+            text, color, pulse = f"Sala aberta · {n}/{len(srv.slots)}", OK, True
         else:
-            status = "Sala fechada"
-            self.act_room.setText("Abrir sala")
-        if self.guest_tab.client:
-            status += " · conectado a " + self.guest_tab.host.text().strip()
-        self.act_status.setText(status)
-        self.tray.setToolTip(f"{APP_NAME}\n{status}")
-
-    def _tray_toggle_room(self):
-        self.host_tab._toggle_server()
-        self._update_tray()
-
-    def _tray_activated(self, reason):
-        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            self.show_window()
+            text, color, pulse = "Inativo", MUTED, False
+        self.status_lbl.setText(text)
+        self.status_dot.set_state(color, pulse)
+        self.act_status.setText(text)
+        self.act_room.setText("Fechar sala" if srv else "Abrir sala")
+        self.tray.setToolTip(f"{APP_NAME}\n{text}")
 
     def show_window(self):
         self.showNormal()
@@ -939,27 +1616,26 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def quit_app(self):
-        self._quitting = True
+        self.show_window()
         self.close()
 
     def closeEvent(self, e):
-        # Com sala aberta ou conectado, o X só esconde a janela: o app continua na bandeja.
-        if not self._quitting and self._busy() and self.tray.isVisible():
-            e.ignore()
-            self.hide()
-            if not self._tray_hint_shown:
-                self._tray_hint_shown = True
-                self.tray.showMessage(APP_NAME, "Continuo rodando aqui na bandeja. Clique com o botão direito "
-                                                "no ícone para fechar a sala ou sair.",
-                                      QSystemTrayIcon.Information, 4000)
-            return
-        self.guest_tab.shutdown()
-        self.host_tab.shutdown()
+        n = len(self.host.server.snapshot()) if self.host.server else 0
+        if n or (self.join.client and self.join.window):
+            msg = (f"Fechar o PS2 Online encerra a sala e desconecta {n} jogador(es)." if n else
+                   "Fechar o PS2 Online tira você da sala.")
+            if QMessageBox.question(self, APP_NAME, msg + "\n\nFechar mesmo assim?") != QMessageBox.Yes:
+                e.ignore()
+                return
+        self.join.shutdown()
+        self.host.shutdown()      # fecha a sala, avisa os convidados e fecha a porta do roteador
         self.tray.hide()
+        self.settings.sync()
         super().closeEvent(e)
         QApplication.quit()
 
 
+# ============================================================================== autoteste / main
 def selftest(out_path):
     """Diagnóstico: abre host e convidado neste PC por 3 s e grava o resultado em out_path."""
     from PySide6.QtCore import QCoreApplication
@@ -1005,16 +1681,19 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(QIcon(str(BASE_DIR / "icon.png")))
-    app.setQuitOnLastWindowClosed(False)   # quem decide sair é a janela principal / a bandeja
+    app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
     pal = QPalette()
-    pal.setColor(QPalette.Window, QColor("#14161c"))
-    pal.setColor(QPalette.WindowText, QColor("#e6e8ee"))
+    for role, c in ((QPalette.Window, "#12141b"), (QPalette.WindowText, "#e6e8ee"), (QPalette.Base, "#0f1218"),
+                    (QPalette.Text, "#e6e8ee"), (QPalette.Button, "#232734"), (QPalette.ButtonText, "#e6e8ee"),
+                    (QPalette.Highlight, "#3b5bdb"), (QPalette.PlaceholderText, "#5d6375")):
+        pal.setColor(role, QColor(c))
     app.setPalette(pal)
     app.setStyleSheet(STYLE)
     w = MainWindow()
     w.show()
-    sys.exit(app.exec())
+    rc = app.exec()
+    os._exit(rc)   # garante que nenhuma thread (áudio, rede) fique viva depois de fechar
 
 
 if __name__ == "__main__":
